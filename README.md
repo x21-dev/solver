@@ -18,3 +18,6 @@ so calls into it inline as calls within one package do.
 ```
 dub test --compiler=ldc2
 ```
+
+To use solver in another project, see the [developer manual](docs/manual.md)
+and its worked example in `docs/example`.
