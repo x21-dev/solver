@@ -10,7 +10,12 @@ surrogate ensemble (`ensemble.d`: small ReLU networks trained by Adam,
 deterministic on any thread count) and `bytes.d`, the little-endian
 encoding of saved states. And the archive (`archive.d`: CMA-MAE over a
 problem's descriptors on a grid, with explorers, model-guided and
-pre-screened emitters, focus, and runs that stop and resume bit for bit).
+pre-screened emitters, focus, and runs that stop and resume bit for bit,
+their state between iterations as plain data in `RunState`). Also the learned
+model (`model.d`: the ensemble trained on a run's evaluations, for the
+pre-screened stages and the model-guided emitters, over a problem's
+learning spec) and `fingerprint.d`, the check that a saved state belongs
+to the problem it is resumed on.
 
 solver is a source library: a dependent compiles its modules with its own,
 so calls into it inline as calls within one package do.
