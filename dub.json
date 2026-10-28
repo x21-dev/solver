@@ -5,14 +5,11 @@
         "x21-dev"
     ],
     "license": "proprietary",
-    "targetType": "library",
+    "targetType": "sourceLibrary",
     "sourcePaths": [
         "source"
     ],
     "importPaths": [
         "source"
-    ],
-    "dflags-ldc": [
-        "-singleobj"
     ]
 }
