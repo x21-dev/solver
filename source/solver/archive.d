@@ -394,6 +394,95 @@ struct ArchiveRun(P, O = ArchiveOptions, size_t N = 0, double minScore = 0)
     bool focusImprovers;      // the focus turned the pre-screened improvers on
 }
 
+/// A run between iterations as a saved state keeps it: an ArchiveRun's
+/// fields but its archive, its causes and its seeds' evaluations (a problem
+/// saves its elites and its counts in its own way), with each emitter's
+/// CMA-ES and RNG as plain data. `runState` takes it from a run and
+/// `restoreRun` puts it back; restored, the run goes on as if it had never
+/// stopped.
+struct RunState(O = ArchiveOptions)
+{
+    O options;                  // evals: the budget it was given
+    size_t lambda, evals, iterations, seedEvals;
+    size_t restartsIdle, restartsInfeasible, restartsConverged;
+    size_t[] reached, abandoned;
+    size_t[] blockedUntil;      // per cell
+    GuideStats guide;           // model-guided explorers (options.surrogatePool > 0)
+    ScreenStats screen;         // pre-screened improvers (options.surrogateImprovers)
+    size_t[] focus;             // a focused run (ArchiveRun.focus); empty: none
+    size_t focusFrom, focusNext;
+    double[] focusScores;
+    bool focusImprovers;
+    /// An Emitter: its CMA-ES as CmaEs.State, its RNG as its state.
+    struct EmitterState
+    {
+        CmaEs.State es;
+        ulong rng;
+        size_t idle, restarts;
+        size_t[] infeasible;
+        bool explorer;
+        size_t target;
+        double closest;
+        size_t stale;
+        size_t from = size_t.max;   // focused run: the focused cell it last started from
+    }
+    EmitterState[] emitters;
+}
+
+/// The state of `run` (an ArchiveRun) between iterations, to save.
+RunState!(typeof(R.options)) runState(R)(const ref R run) pure
+{
+    alias S = RunState!(typeof(R.options));
+    S st;
+    copyShared!(S, ["emitters"])(st, run);
+    foreach (ref e; run.emitters)
+    {
+        S.EmitterState s;
+        copyShared!(S.EmitterState, ["es", "rng"])(s, e);
+        s.es = e.es.save();
+        s.rng = e.rng.state;
+        st.emitters ~= s;
+    }
+    return st;
+}
+
+/// Puts a saved state back into `run` (an ArchiveRun): everything but its
+/// archive, causes and seeds, which the caller restores.
+void restoreRun(R, O)(ref R run, const ref RunState!O st) pure
+{
+    alias S = RunState!O;
+    copyShared!(S, ["emitters"])(run, st);
+    run.emitters = null;
+    foreach (ref e; st.emitters)
+    {
+        Emitter m;
+        copyShared!(S.EmitterState, ["es", "rng"])(m, e);
+        m.es = CmaEs.restore(e.es);
+        m.rng = SplitMix64(e.rng);
+        run.emitters ~= m;
+    }
+}
+
+/// Copies every field of `Shape` but those in `special` from `from` to
+/// `to`, which both have it under the same name (arrays duplicated). A
+/// field of Shape that either lacks, and `special` doesn't name, fails to
+/// compile.
+private void copyShared(Shape, string[] special, To, From)(ref To to, const ref From from)
+{
+    import std.algorithm : canFind;
+    import std.traits : FieldNameTuple;
+    static foreach (name; FieldNameTuple!Shape)
+        static if (!special.canFind(name))
+        {{
+            static assert(__traits(hasMember, To, name) && __traits(hasMember, From, name),
+                          "copyShared: no field " ~ name ~ " in both " ~ To.stringof ~ " and " ~ From.stringof);
+            static if (is(typeof(__traits(getMember, from, name)) : const(E)[], E))
+                __traits(getMember, to, name) = __traits(getMember, from, name).dup;
+            else
+                __traits(getMember, to, name) = __traits(getMember, from, name);
+        }}
+}
+
 /// One batch of evaluations as runArchive made it: the seeds (`emitters`
 /// empty), or an iteration's, candidate i from emitter i / lambda as it
 /// stood when it asked for them.
@@ -1228,6 +1317,20 @@ unittest
     Plane t;
     auto resumed = A.runArchive(t, grid, null, o, null, &stopped);
     assert(!resumed.stopped && sameRun(whole, resumed));
+
+    // ... and so does a run saved as its RunState and restored into a new
+    // one (the archive and causes copied as a problem would restore them).
+    Plane s2;
+    auto stopped2 = A.runArchive(s2, grid, [[0.5, 0.5]], o, null, null, (ref const Run r) => r.iterations == 4);
+    const saved = runState(stopped2);
+    Run back;
+    back.archive = stopped2.archive;
+    back.causes = stopped2.causes;
+    restoreRun(back, saved);
+    assert(sameBits(runState(back), saved) && back.emitters.length == 3);
+    Plane t2;
+    auto resumedBack = A.runArchive(t2, grid, null, o, null, &back);
+    assert(sameRun(whole, resumedBack));
 
     // A larger budget given to the finished run: as the run given it at the start.
     o.evals = 600;

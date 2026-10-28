@@ -14,7 +14,7 @@ import solver.problem;
 import solver.rng : SplitMix64;
 
 /// What a pre-screened stage asks of its model: learn from evaluations,
-/// train, predict. pleaser's ArchiveModel is one, for its `Evaluation`.
+/// train, predict. solver.model's LearnedModel is one.
 interface StageModel(E)
 {
     /// Adds evaluated candidates (genes in [0, 1]) to the training data.
