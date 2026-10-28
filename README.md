@@ -8,7 +8,9 @@ CMA-ES stage over any problem (`stage.d`: stall stop, optional surrogate
 pre-screening through a `StageModel`, a per-generation callback). Also the
 surrogate ensemble (`ensemble.d`: small ReLU networks trained by Adam,
 deterministic on any thread count) and `bytes.d`, the little-endian
-encoding of saved states.
+encoding of saved states. And the archive (`archive.d`: CMA-MAE over a
+problem's descriptors on a grid, with explorers, model-guided and
+pre-screened emitters, focus, and runs that stop and resume bit for bit).
 
 solver is a source library: a dependent compiles its modules with its own,
 so calls into it inline as calls within one package do.
