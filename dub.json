@@ -11,5 +11,8 @@
     ],
     "importPaths": [
         "source"
+    ],
+    "dflags-ldc": [
+        "-singleobj"
     ]
 }

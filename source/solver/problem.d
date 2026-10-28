@@ -143,6 +143,7 @@ struct Ranking
     double terminalOffset = 50;
     double boundPenalty = 10;     // pleaser's BOUND_PENALTY, per squared gene unit
 
+    pragma(inline, true)
     double fitness(const Breach b, double value, double excess) const pure nothrow @nogc @safe
     {
         return (b.hard > 0 ? hardOffset + b.hard : b.terminal > 0 ? terminalOffset + b.terminal : -value)
@@ -156,6 +157,8 @@ struct Ranking
 enum Scoring : ubyte { all, feasibleOnly }
 
 /// A gene clamped to [0, 1] (NaN stays NaN).
+/// Inlined across packages, as it was within pleaser (decode calls it per gene).
+pragma(inline, true)
 double clamp01(double g) pure nothrow @nogc @safe
 {
     return g < 0 ? 0 : (g > 1 ? 1 : g);
@@ -171,6 +174,7 @@ double[] clamp01(const(double)[] x) pure nothrow @safe
 }
 
 /// How far genes are out of [0, 1]: the sum of the squared overshoots.
+pragma(inline, true)
 double boundExcess(const(double)[] x) pure nothrow @nogc @safe
 {
     double excess = 0;
