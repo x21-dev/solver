@@ -19,8 +19,9 @@ same bits on any thread count, provided the problem keeps the rules in
 [Determinism](#determinism).
 
 This manual describes solver as of step 5 of its extraction from pleaser
-(solver#6: `solver.model`, `RunState`, `solver.fingerprint`). Everything
-here was checked against that code. The worked example in
+(solver#6: `solver.model` and `RunState`) and the fixes that followed it
+(the model over the problem's surrogate members, one fingerprint check,
+checked stage options). Everything here was checked against that code. The worked example in
 [`docs/example`](example/source/app.d) builds and runs against it.
 [Gaps and caveats](#gaps-and-caveats) lists what solver doesn't do yet and
 the traps in the current API. Read it before you rely on a feature.
@@ -101,9 +102,7 @@ be outside [0, 1].** Your problem must clamp them (`clamp01`, or
 genes out of range lower, by `Ranking.boundPenalty` times `boundExcess(x)`
 (the sum of the squared overshoots). Everything after the evaluation gets
 the genes clamped to [0, 1]: the best, the archive's elites, the model,
-and the progress reports. The comment at the top of `solver/problem.d`
-says the search clamps before `evaluate`. The code doesn't; see
-[gap 1](#gaps-and-caveats).
+and the progress reports.
 
 ### Evaluations
 
@@ -212,12 +211,13 @@ template. This table lists only the members that the code reads.
 | `string noFeasibleSeed() const` | Archive | A hint appended to `NoFeasibleSeed`'s message. |
 | `void adoptCauses(ref Causes)` | Archive, on resume | Lets the problem fix up resumed cause counts. |
 
-`solver.problem` also documents the optional members `fingerprint`,
-`saveEval`/`loadEval` (`isSaveable!P`) and `featureCount`, `features`,
-`targetCount`, `targets`, `predicted` (`hasSurrogate!P`). **No search
-reads them.** The learned model uses a separate *learning spec* instead
-(see [A learned model](#a-learned-model)), and saving is up to you (see
-[gap 2](#gaps-and-caveats)).
+`solver.problem` also documents the surrogate members `featureCount`,
+`features`, `targetCount`, `targets` and `predicted` (`hasSurrogate!P`):
+with them a problem is its own learning spec for the learned model (see
+[A learned model](#a-learned-model)). And it documents `fingerprint` and
+`saveEval`/`loadEval` (`isSaveable!P`), a convention for a project's own
+save format: no search reads them, and saving is up to you (see
+[gap 1](#gaps-and-caveats)).
 
 ### Genes: `GeneSpec`
 
@@ -295,12 +295,12 @@ StageOptions o, M screenModel, generationDone = null)` runs CMA-ES from
 
 | Field | Default | Meaning |
 |---|---|---|
-| `lambda` | none | Population size. **Must be > 0.** 0 crashes; see [gap 5](#gaps-and-caveats). |
+| `lambda` | none | Population size. Must be > 0 (`cmaStage` throws otherwise). |
 | `sigma` | none | Initial step size, in gene units |
 | `budget` | none | Evaluations, rounded up to whole generations |
 | `seed` | none | CMA-ES and pre-screening seed |
 | `stallGenerations`, `stallTolerance` | 100, 0.01 | Stop when the best value rose by less than the tolerance over the last N generations (0 = never) |
-| `surrogatePool` | 0 | With a model: sample this many times `lambda`, evaluate `lambda`. **Must be ≥ 1 when you pass a model**; see [gap 5](#gaps-and-caveats). |
+| `surrogatePool` | 0 | With a model: sample this many times `lambda`, evaluate `lambda`. Must be ≥ 1 when you pass a model (`cmaStage` throws otherwise). |
 | `surrogateShare` | 0.5 | Share of the evaluated candidates that the model picks (the rest are random) |
 | `surrogateFrom` | 5 | Generation where pre-screening starts |
 | `surrogateEpochs` | 10 | Epochs trained before each pre-screened generation |
@@ -545,20 +545,21 @@ evaluated. It is both a `StageModel!(L.Eval)` and an
 
 ### The learning spec
 
-`L` describes what the network learns of your problem. `isLearning!L`
-checks it:
+`L` describes what the network learns of your problem: `alias Eval`,
+`dimension()`, and the surrogate members of the problem interface.
+`isLearning!L` checks it. A problem with those members (`hasSurrogate!P`)
+is a learning spec itself, as the worked example's `Beam` is; a separate
+struct with them works too, when the features need state the problem
+doesn't hold (pleaser's spec keeps its feature map apart from its
+evaluator).
 
 ```d
-struct BeamLearning
+struct Beam
 {
-    alias Eval = Beam.Eval;
-
-    size_t dimension() const { return 2; }        // genes
-    size_t inputs() const { return 2; }           // network inputs
-    size_t outputs() const { return 4; }          // network outputs
-    size_t descriptorCount() const { return 2; }  // descriptors predicted
-
+    // ... the problem's members, then:
+    size_t featureCount() const { return 2; }     // network inputs
     void features(const(double)[] genes, double[] f) const { f[] = genes[]; }
+    size_t targetCount() const { return 4; }      // network outputs
 
     void targets(const ref Eval e, double[] t) const
     {
@@ -568,12 +569,10 @@ struct BeamLearning
         t[3] = e.rate;
     }
 
-    void predicted(const(double)[] m, ref double objective, ref Breach breach, double[] descriptors) const
+    Predicted predicted(const(double)[] m) const
     {
-        objective = m[0];
-        breach = Breach(m[1] > 0.5 ? m[1] : 0);         // headroom on a prediction
-        if (descriptors.length)                         // empty on stage calls
-            descriptors[] = m[2 .. 4];
+        // 0.5 of headroom on a prediction.
+        return Predicted(m[0], Breach(m[1] > 0.5 ? m[1] : 0), m[2 .. 4].dup);
     }
 }
 ```
@@ -584,16 +583,17 @@ struct BeamLearning
 - `targets` gives one value per output. NaN, or any value that isn't
   finite, counts as missing and adds nothing to the loss. An unscored
   objective is the usual case.
-- `predicted` turns outputs into an objective, a `Breach` and descriptors.
-  It's also called from several threads at once. `descriptors` is empty on
-  `StageModel` calls. Add headroom here to make predictions err towards
-  infeasible.
+- `predicted` turns outputs into a `Predicted`: an objective, a `Breach`
+  and the descriptors (as many as the problem's `descriptorCount`; the
+  archive asks for them, a stage ignores them). It's also called from
+  several threads at once. Add headroom here to make predictions err
+  towards infeasible.
 
 ### Using it
 
 ```d
-alias Model = LearnedModel!BeamLearning;
-auto model = new Model(BeamLearning(), seed, pool);   // pool: a TaskPool, or null
+alias Model = LearnedModel!Beam;
+auto model = new Model(Beam(), seed, pool);   // pool: a TaskPool, or null
 
 // A pre-screened stage:
 StageOptions so = {lambda: 8, sigma: 0.2, budget: 800, seed: 42, surrogatePool: 4};
@@ -608,8 +608,9 @@ A.runArchive(p, grid, seeds, ao, null, null, null, null, model);
 The constructor standardises the inputs on the features of 4000 uniformly
 random gene vectors drawn from `seed`, so `features` must accept any genes
 in [0, 1]. The ensemble uses `EnsembleOptions` defaults (5 members, two
-hidden layers of 64, Adam at 1e-3) with your seed. `LearnedModel` doesn't
-let you change them; see [gap 6](#gaps-and-caveats).
+hidden layers of 64, Adam at 1e-3) with your seed, unless you pass your
+own as a fourth argument (its `seed` is replaced by the model's):
+`new Model(Beam(), seed, pool, EnsembleOptions(3, 32))`.
 
 Other members:
 
@@ -648,7 +649,7 @@ fails:
 ### To a file
 
 solver gives you the state as plain data. **The file format is yours**:
-solver has no serialiser for it (see [gap 2](#gaps-and-caveats)). Save
+solver has no serialiser for it (see [gap 1](#gaps-and-caveats)). Save
 these four things:
 
 | What | From | Back with |
@@ -669,9 +670,12 @@ does.
 
 Also save a **fingerprint**: name/value pairs describing what the run was
 computed from, such as problem inputs, settings and versions. Check it on
-load with `solver.fingerprint.mismatch(saved, current)`. It returns null
-when the two sets hold the same pairs, in any order, or the first
-difference as a sentence.
+load with `solver.problem.fingerprintMismatch(saved, now)`. It returns
+null when every saved pair is in `now` with the same value, in any order,
+or the first that isn't as a message. Pairs only in `now` are new and
+accepted, so a project can add a setting to its fingerprint without
+refusing older files; when a new setting changes results, give it a
+default value its older files can be read as, or check it yourself.
 
 The worked example saves and loads with a 60-line generic writer
 ([`docs/example/source/checkpoint.d`](example/source/checkpoint.d)). The
@@ -698,7 +702,7 @@ A.Run load(string path, const ref Beam p, Model model)
     auto r = Bytes(cast(ubyte[]) read(path));
     string[2][] fp;
     checkpoint.read(r, fp);
-    if (const why = mismatch(fp, p.fingerprint))
+    if (const why = fingerprintMismatch(fp, p.fingerprint))
         throw new Exception("the checkpoint is of another problem: " ~ why);
     RunState!ArchiveOptions st;
     checkpoint.read(r, st);
@@ -827,64 +831,39 @@ Your problem must keep them too:
 
 ## Gaps and caveats
 
-These are true of solver main plus solver#6 (step 5) on 2026-10-28. Each
+These are true of solver main on 2026-10-28. Each
 one says what it costs you and how to work around it today.
 
-1. **Doc versus code on gene clamping.** The header of `solver/problem.d`
-   says the search clamps genes before `evaluate`. `cmaStage` and
-   `runArchive` don't: a probe saw genes from −0.32 to 1.41. Clamp in your
-   problem.
-2. **No generic checkpoint format.** solver has `RunState`,
+1. **No generic checkpoint format.** solver has `RunState`,
    `CmaEs.State`, `LearnedModel.save` and `Bytes`, but nothing that writes
    a run to a file. Each project writes its own; the example shows one way.
    Writing a struct straight through `Bytes.put` is wrong for any struct
    holding arrays, because it writes their pointers. Walk the fields, as
-   `checkpoint.d` does.
-3. **Optional problem members that nothing reads.** `problem.d` documents
-   `fingerprint`, `saveEval`/`loadEval` (`isSaveable`) and
-   `featureCount`/`targetCount`/`features`/`targets`/`predicted`
-   (`hasSurrogate`), but no search or model calls them. The learned model
-   takes a separate learning spec with other member names (`inputs`,
-   `outputs`, and a different `predicted` signature). Implement the
-   learning spec, and treat the `problem.d` members as unused.
-4. **Two fingerprint checks with different rules.**
-   `solver.problem.fingerprintMismatch(saved, now)` accepts pairs that are
-   only in `now`. `solver.fingerprint.mismatch(saved, current)` rejects
-   them. Pick one; this manual uses `mismatch`.
-5. **Unchecked stage options.** `cmaStage` with `lambda = 0` crashes with
-   a segfault: it compares the population size to 0 and takes the
-   pre-screening path with no model. With a model but
-   `surrogatePool = 0`, it crashes with SIGFPE, because the pick divides by
-   an empty pool. Both crashes were reproduced. `runArchive` checks the
-   model and pool pairing; `cmaStage` doesn't. Always pass `lambda > 0`,
-   and `surrogatePool ≥ 1` with a model.
-6. **`LearnedModel` has fixed network settings.** Only the seed and the
-   pool are parameters. The member count, hidden width, batch size,
-   learning rate and L2 are `EnsembleOptions` defaults. To change them,
-   write your own `StageModel` / `ArchiveSurrogate` over `Ensemble`.
-7. **The terminal tier on stage pre-screening.** `StageModel.predictScore`
+   `checkpoint.d` does. `isSaveable`'s `saveEval`/`loadEval` are a
+   convention for such a format; nothing in solver calls them.
+2. **The terminal tier on stage pre-screening.** `StageModel.predictScore`
    returns one violation, which the stage ranks as hard. `LearnedModel`
    reports `hard + terminal` there, so a predicted terminal breach ranks as
    a hard one in a pre-screened stage. The archive's model interface keeps
    the tiers.
-8. **The archive's ranking needs a custom options type.** `ArchiveOptions`
+3. **The archive's ranking needs a custom options type.** `ArchiveOptions`
    has no `ranking` field, so an objective outside about −50 to +50 needs
    your own `O` with one (see [Ranking](#ranking)).
-9. **Restart and explorer rules are constants.** `RESTART_*`, `EXPLORE_*`
+4. **Restart and explorer rules are constants.** `RESTART_*`, `EXPLORE_*`
    and `AIM_SAMPLES` can't be changed per run.
-10. **No stage resume.** A stage runs to its end. Use the archive, or your
-    own loop over `CmaEs`, if you need checkpoints within a stage.
-11. **`DynamicProblem` mentions a C API and Python.** Neither exists.
-12. **LDC only, and no dub registry package.** See
-    [Adding solver to a project](#adding-solver-to-a-project).
-13. **No platform-identical maths.** pleaser's `detmath` (`exp2d`,
-    `log2d`) stays in pleaser, so a problem that needs bit-identical
-    results across platforms must bring its own (see
-    [Determinism](#determinism)).
-14. **Evaluation log, survey and model test tools stay in pleaser.**
-    pleaser's `evals.bin` log, random survey and offline surrogate tests
-    are mix-specific and stay there. Use the `evaluated` callback to build
-    your own log.
+5. **No stage resume.** A stage runs to its end. Use the archive, or your
+   own loop over `CmaEs`, if you need checkpoints within a stage.
+6. **`DynamicProblem` mentions a C API and Python.** Neither exists.
+7. **LDC only, and no dub registry package.** See
+   [Adding solver to a project](#adding-solver-to-a-project).
+8. **No platform-identical maths.** pleaser's `detmath` (`exp2d`,
+   `log2d`) stays in pleaser, so a problem that needs bit-identical
+   results across platforms must bring its own (see
+   [Determinism](#determinism)).
+9. **Evaluation log, survey and model test tools stay in pleaser.**
+   pleaser's `evals.bin` log, random survey and offline surrogate tests
+   are mix-specific and stay there. Use the `evaluated` callback to build
+   your own log.
 
 ---
 
@@ -896,7 +875,6 @@ one says what it costs you and how to work around it today.
 | `solver.stage` | `StageModel`, `StageOptions`, `Best`, `hasCauses`, `StageGeneration`, `StageEnd`, `cmaStage`, `pickRendered`, `stalled` |
 | `solver.archive` | `Elite`, `Offer`, `Archive`, `copyOf`, `selectDiverse`, `ArchiveOptions`, `ArchiveSurrogate`, `GuideStats`, `ScreenStats`, `RestartReason`, `reasonText`, `NoCauses`, `CausesOf`, `ArchiveGeneration`, `Emitter`, `ArchiveRun`, `RunState`, `runState`, `restoreRun`, `ArchiveBatch`, `NoFeasibleSeed`, `Archiving` (`runArchive`), the restart constants and helpers |
 | `solver.model` | `isLearning`, `LearnedModel`, `ColumnStats`, `columnStats` |
-| `solver.fingerprint` | `mismatch` |
 | `solver.cmaes` | `CmaEs` (with `State`), `jacobiEigen` |
 | `solver.ensemble` | `EnsembleOptions`, `Ensemble`, `Stats`, `targetStats` |
 | `solver.bytes` | `Bytes` |

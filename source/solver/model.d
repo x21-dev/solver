@@ -4,22 +4,22 @@
 /// (ArchiveSurrogate). Moved from pleaser's archivemodel.d, which now gives
 /// it only the problem's side: a learning spec.
 ///
-/// A learning spec `L` has
+/// A learning spec `L` has the surrogate members of the problem interface
+/// (problem.d, `hasSurrogate`), with the evaluation type and dimension: so
+/// a problem that has them is a learning spec itself, and a separate spec
+/// (pleaser's, which keeps its feature map apart from its evaluator) is a
+/// small struct.
 ///
-/// - `alias Eval`: the evaluation it learns from;
-/// - `size_t dimension() const`, `inputs() const`, `outputs() const`,
-///   `descriptorCount() const`: genes per candidate, the network's inputs
-///   and outputs, the descriptors predicted;
-/// - `void features(const(double)[] genes, double[] f) const`: the inputs
-///   for genes in [0, 1] (called from several threads at once);
-/// - `void targets(const ref Eval e, double[] t) const`: what the network
-///   learns of an evaluation, one value per output (NaN where missing;
-///   anything not finite counts as missing);
-/// - `void predicted(const(double)[] outputs, ref double objective,
-///   ref Breach breach, double[] descriptors) const`: the network's outputs
-///   as a prediction (also called from several threads at once);
-///   `descriptors` is empty when only the objective and breach are asked
-///   for (StageModel).
+/// - `alias Eval` and `size_t dimension() const`: as the problem's;
+/// - `size_t featureCount() const` and `void features(const(double)[] genes,
+///   double[] f) const`: the network's inputs for genes in [0, 1] (called
+///   from several threads at once);
+/// - `size_t targetCount() const` and `void targets(const ref Eval e,
+///   double[] t) const`: what the network learns of an evaluation, one value
+///   per output (NaN where missing; anything not finite counts as missing);
+/// - `Predicted predicted(const(double)[] t) const`: the network's outputs
+///   read as objective, breach and descriptors (also called from several
+///   threads at once).
 ///
 /// Deterministic: the features and predictions of a batch are computed one
 /// candidate per task, independently, and the ensemble trains as its own
@@ -36,19 +36,17 @@ import std.range : iota;
 import solver.archive : ArchiveSurrogate;
 import solver.bytes : Bytes;
 import solver.ensemble : Ensemble, EnsembleOptions;
-import solver.problem : Breach, clamp01;
+import solver.problem : Breach, clamp01, Predicted;
 import solver.rng : SplitMix64;
 import solver.stage : StageModel;
 
 /// Whether `L` is a learning spec (see the module's documentation).
 enum bool isLearning(L) = is(L.Eval) && is(typeof((const ref L l, const(double)[] x, double[] f,
                                                     const ref L.Eval e) {
-    size_t n = l.dimension() + l.inputs() + l.outputs() + l.descriptorCount();
+    size_t n = l.dimension() + l.featureCount() + l.targetCount();
     l.features(x, f);
     l.targets(e, f);
-    double objective;
-    Breach b;
-    l.predicted(x, objective, b, f);
+    Predicted q = l.predicted(x);
 }));
 
 final class LearnedModel(L) : StageModel!(L.Eval), ArchiveSurrogate!(L.Eval) if (isLearning!L)
@@ -56,15 +54,16 @@ final class LearnedModel(L) : StageModel!(L.Eval), ArchiveSurrogate!(L.Eval) if 
     alias Eval = L.Eval;
     enum size_t SCALE_ROWS = 4000;     // random gene vectors the inputs are standardised on
 
-    /// A model of `learning`'s problem, its ensemble seeded with `seed`;
+    /// A model of `learning`'s problem, its ensemble seeded with `seed`
+    /// (which replaces `ensemble.seed`) and otherwise set by `ensemble`;
     /// `pool` (or null) computes features and predictions and trains.
-    this(L learning, ulong seed, TaskPool pool)
+    this(L learning, ulong seed, TaskPool pool, EnsembleOptions ensemble = EnsembleOptions.init)
     {
         this.learning = learning;
         this.pool = pool;
-        EnsembleOptions o;
+        EnsembleOptions o = ensemble;
         o.seed = seed;
-        net = new Ensemble(learning.inputs, learning.outputs, o);
+        net = new Ensemble(learning.featureCount, learning.targetCount, o);
         // The inputs' scale, from uniformly random genes: fixed, whatever the data.
         auto rng = SplitMix64(seed ^ 0x5CA1_E5CA_1E5C_A1E5UL);
         auto uni = new double[][](SCALE_ROWS, learning.dimension);
@@ -102,19 +101,23 @@ final class LearnedModel(L) : StageModel!(L.Eval), ArchiveSurrogate!(L.Eval) if 
     void predictScore(const(double[])[] genes, double[] score, double[] violation)
     {
         predictEach(genes, (size_t i, const(double)[] m) {
-            Breach b;
-            learning.predicted(m, score[i], b, null);
-            violation[i] = b.hard + b.terminal;
+            const q = learning.predicted(m);
+            score[i] = q.objective;
+            violation[i] = q.breach.hard + q.breach.terminal;
         });
     }
 
     /// ArchiveSurrogate: the predicted objective, breach and descriptors
-    /// (descriptorCount per candidate, flat).
+    /// (as many per candidate as `predicted` gives, flat).
     void predictArchive(const(double[])[] genes, double[] objective, Breach[] breach, double[] descriptors)
     {
-        immutable size_t d = learning.descriptorCount;
+        immutable size_t d = genes.length ? descriptors.length / genes.length : 0;
         predictEach(genes, (size_t i, const(double)[] m) {
-            learning.predicted(m, objective[i], breach[i], descriptors[d * i .. d * (i + 1)]);
+            const q = learning.predicted(m);
+            assert(q.descriptors.length == d);
+            objective[i] = q.objective;
+            breach[i] = q.breach;
+            descriptors[d * i .. d * (i + 1)] = q.descriptors[];
         });
     }
 
@@ -209,7 +212,7 @@ private:
 
     double[][] featuresOf(const(double[])[] genes)
     {
-        auto f = new double[][](genes.length, learning.inputs);
+        auto f = new double[][](genes.length, learning.featureCount);
         if (pool is null)
             foreach (i; 0 .. genes.length)
                 learning.features(genes[i], f[i]);
@@ -261,9 +264,8 @@ version (unittest)
             double objective, over;
         }
         size_t dimension() const { return 2; }
-        size_t inputs() const { return 4; }
-        size_t outputs() const { return 2; }
-        size_t descriptorCount() const { return 1; }
+        size_t featureCount() const { return 4; }
+        size_t targetCount() const { return 2; }
         void features(const(double)[] x, double[] f) const
         {
             f[0] = x[0];
@@ -276,12 +278,9 @@ version (unittest)
             t[0] = e.objective;
             t[1] = e.over;
         }
-        void predicted(const(double)[] m, ref double objective, ref Breach b, double[] d) const
+        Predicted predicted(const(double)[] m) const
         {
-            objective = m[0];
-            b = Breach(m[1] > 0 ? m[1] : 0);
-            if (d.length)
-                d[0] = m[0] / 2;
+            return Predicted(m[0], Breach(m[1] > 0 ? m[1] : 0), [m[0] / 2]);
         }
     }
     static assert(isLearning!Square);
@@ -362,4 +361,20 @@ unittest
     assert(b.save(5) == kept);
     b.restore(bytes, 5);
     assert(b.save(5) == bytes && b.rows == 10);
+}
+
+unittest
+{
+    // The ensemble's settings but the seed come from the options given.
+    import solver.ensemble : EnsembleOptions;
+    EnsembleOptions small = {members: 2, hidden: 8, seed: 99};
+    auto a = new LearnedModel!Square(Square(), 1, null, small), b = new LearnedModel!Square(Square(), 1, null);
+    auto c = new LearnedModel!Square(Square(), 1, null, EnsembleOptions.init);
+    const g = squareGenes(20, 4);
+    foreach (m; [a, b, c])
+    {
+        m.learn(g, squareEvals(g));
+        m.train(1);
+    }
+    assert(a.save(20).length < b.save(20).length && b.save(20) == c.save(20));
 }
