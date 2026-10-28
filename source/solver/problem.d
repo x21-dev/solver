@@ -1,9 +1,9 @@
 /// The problem interface: what a search (a CMA-ES stage, the archive)
 /// needs to know about the problem it optimises, and nothing more.
 ///
-/// The design is in the note "Solver problem interface". pleaser uses the
-/// ranking helpers (`Ranking`, `clamp01`, `boundExcess`) so far; the searches
-/// move here next.
+/// The design is in the note "Solver problem interface". The searches over
+/// it are the CMA-ES stage (stage.d) and the archive (archive.d); the
+/// surrogate model is model.d.
 ///
 /// A problem is a compile-time concept, not a class: the searches are
 /// templates over `P`, so every call into the problem is direct and can be
@@ -15,10 +15,12 @@
 /// below, which is a `P` like any other.
 ///
 /// The search works in normalised gene space: `dimension` genes, each in
-/// [0, 1] when evaluated. CMA-ES may sample outside; the search clamps the
-/// genes before `evaluate` and adds `Ranking.boundPenalty` times how far
-/// out they were (`boundExcess`) to the candidate's fitness, so the problem
-/// never sees a gene outside [0, 1]. Mapping genes to physical values (dB,
+/// [0, 1] when evaluated. CMA-ES may sample outside, and the searches pass
+/// the genes to `evaluate` as sampled: the problem reads them clamped
+/// (`clamp01`; pleaser's decode does, and one of its genes compares the raw
+/// value). The fitness adds `Ranking.boundPenalty` times how far out they
+/// were (`boundExcess`); the best, the archive's elites and the model get
+/// them clamped. Mapping genes to physical values (dB,
 /// Hz, a quarter, a volume) is the problem's own business; `GeneSpec` is a
 /// helper for it.
 ///
@@ -56,7 +58,9 @@
 ///   `void targets(const ref Eval, double[] t) const` (what the model
 ///   learns; NaN where not measured), and
 ///   `Predicted predicted(const(double)[] t) const`: a predicted target
-///   row read as objective, breach and descriptors.
+///   row read as objective, breach and descriptors. A problem with these
+///   is a learning spec for solver.model's `LearnedModel` as it is; a
+///   separate struct with them (and `Eval` and `dimension`) is one too.
 /// - Saving: `const(string[2])[] fingerprint() const` (what a saved run
 ///   must match to be resumed: stems, ranges, limits), and
 ///   `void saveEval(const ref Eval, ref string[2][] fields) const` with
@@ -257,7 +261,8 @@ enum bool hasDescriptors(P) = isProblem!P && is(typeof((const ref P cp, const re
     cp.descriptors(e, d);
 }));
 
-/// Whether `P` can be modelled by a surrogate.
+/// Whether `P` can be modelled by a surrogate: then it is also a learning
+/// spec (solver.model's `isLearning`).
 enum bool hasSurrogate(P) = isProblem!P && is(typeof((const ref P cp, const ref P.Eval e,
                                                       const(double)[] x, double[] f)
 {

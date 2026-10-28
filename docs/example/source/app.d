@@ -12,7 +12,6 @@ import std.stdio : writefln;
 static import checkpoint;
 import solver.archive;
 import solver.bytes : Bytes;
-import solver.fingerprint : mismatch;
 import solver.model : LearnedModel, isLearning;
 import solver.problem;
 import solver.stage;
@@ -91,23 +90,13 @@ struct Beam
 
     /// What a saved run must match to be resumed on this problem.
     const(string[2])[] fingerprint() const { return [["problem", "beam 1"], ["load_limit", "200"]]; }
-}
 
-static assert(isProblem!Beam && hasDescriptors!Beam && hasCauses!Beam);
-
-/// What the learned model learns of a Beam evaluation: genes in; the
-/// objective, the breach over the hard and terminal limits, and the two
-/// descriptors out.
-struct BeamLearning
-{
-    alias Eval = Beam.Eval;
-
-    size_t dimension() const { return 2; }
-    size_t inputs() const { return 2; }
-    size_t outputs() const { return 4; }
-    size_t descriptorCount() const { return 2; }
-
+    // What the learned model learns of an evaluation: genes in; the
+    // objective, the breach over the hard and terminal limits, and the two
+    // descriptors out. With these the problem is its own learning spec.
+    size_t featureCount() const { return 2; }
     void features(const(double)[] genes, double[] f) const { f[] = genes[]; }
+    size_t targetCount() const { return 4; }
 
     void targets(const ref Eval e, double[] t) const
     {
@@ -117,22 +106,20 @@ struct BeamLearning
         t[3] = e.rate;
     }
 
-    void predicted(const(double)[] m, ref double objective, ref Breach breach, double[] descriptors) const
+    Predicted predicted(const(double)[] m) const
     {
-        objective = m[0];
-        breach = Breach(m[1] > 0.5 ? m[1] : 0);         // 0.5 of headroom on a prediction
-        if (descriptors.length)
-            descriptors[] = m[2 .. 4];
+        // 0.5 of headroom on a prediction.
+        return Predicted(m[0], Breach(m[1] > 0.5 ? m[1] : 0), m[2 .. 4].dup);
     }
 }
 
-static assert(isLearning!BeamLearning);
+static assert(isProblem!Beam && hasDescriptors!Beam && hasCauses!Beam && hasSurrogate!Beam && isLearning!Beam);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The run
 // ─────────────────────────────────────────────────────────────────────────────
 
-alias Model = LearnedModel!BeamLearning;
+alias Model = LearnedModel!Beam;
 alias A = Archiving!(Beam, BinnedGrid);
 
 static immutable Axis[2] axes = [Axis("width", [3, 5, 7], "nmwW", 0, 2),
@@ -168,7 +155,7 @@ A.Run load(string path, const ref Beam p, Model model)
     auto r = Bytes(cast(ubyte[]) read(path));
     string[2][] fp;
     checkpoint.read(r, fp);
-    if (const why = mismatch(fp, p.fingerprint))
+    if (const why = fingerprintMismatch(fp, p.fingerprint))
         throw new Exception("the checkpoint is of another problem: " ~ why);
     RunState!ArchiveOptions st;
     checkpoint.read(r, st);
@@ -191,7 +178,7 @@ void main()
     Best!(Beam.Eval) best;
     double[] x0 = [Beam.spec[0].toGene(Beam.spec[0].neutral), Beam.spec[1].toGene(Beam.spec[1].neutral)];
     StageOptions so = {lambda: 8, sigma: 0.2, budget: 800, seed: 42, surrogatePool: 4};
-    const end = cmaStage(p, best, x0, so, new Model(BeamLearning(), 3, null), (const ref StageGeneration!Beam g) {
+    const end = cmaStage(p, best, x0, so, new Model(Beam(), 3, null), (const ref StageGeneration!Beam g) {
         if (g.generation % 25 == 0)
             writefln("stage gen %3d  best %.4f  infeasible %d (load %d, width %d)", g.generation, g.best,
                      g.infeasible, g.causes.load, g.causes.minWidth);
@@ -205,18 +192,18 @@ void main()
     const grid = BinnedGrid(axes[]);
     const ao = archiveOptions();
     const seeds = [best.genes];
-    const whole = A.runArchive(p, grid, seeds, ao, null, null, null, null, new Model(BeamLearning(), 5, null));
+    const whole = A.runArchive(p, grid, seeds, ao, null, null, null, null, new Model(Beam(), 5, null));
 
     immutable path = buildPath(tempDir, "solver-example.state");
     {
-        auto model = new Model(BeamLearning(), 5, null);
+        auto model = new Model(Beam(), 5, null);
         const stopped = A.runArchive(p, grid, seeds, ao, null, null, (const ref A.Run r) => r.iterations == 10,
                                      null, model);
         save(path, p, stopped, model);
         writefln("stopped after %d iterations: %d cells, QD score %.2f", stopped.iterations,
                  stopped.archive.coverage, stopped.archive.qdScore);
     }
-    auto model = new Model(BeamLearning(), 5, null);
+    auto model = new Model(Beam(), 5, null);
     auto run = load(path, p, model);
     remove(path);
     const resumed = A.runArchive(p, grid, null, ao, null, &run, null, null, model);

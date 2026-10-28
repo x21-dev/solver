@@ -9,6 +9,8 @@
 /// count.
 module solver.stage;
 
+import std.exception : enforce;
+
 import solver.cmaes : CmaEs;
 import solver.problem;
 import solver.rng : SplitMix64;
@@ -112,6 +114,8 @@ StageEnd cmaStage(P, B, M)(ref P p, ref B best, const(double)[] x0, const ref St
     // compile either way.
     StageModel!(P.Eval) model = screenModel;
     immutable bool haveModel = model !is null;
+    enforce(o.lambda > 0, "a stage needs a population (StageOptions.lambda)");
+    enforce(!haveModel || o.surrogatePool > 0, "a pre-screening model needs StageOptions.surrogatePool > 0");
     immutable size_t lambda = o.lambda;
     auto es = CmaEs(x0, o.sigma, lambda, o.seed);
     auto fit = new double[lambda];
@@ -375,6 +379,19 @@ unittest
     assert(best.feasible && best.eval.obj > -1e-4);
     foreach (v; best.genes)
         assert(v >= 0.29 && v <= 0.31);
+}
+
+unittest
+{
+    // A stage needs a population, and a model a larger sample to screen.
+    import std.exception : assertThrown;
+    Sphere p;
+    Best!(Sphere.Eval) best;
+    best.genes = [0.5, 0.5, 0.5, 0.5];
+    StageOptions o = {lambda: 0, sigma: 0.2, budget: 40, seed: 3};
+    assertThrown(cmaStage(p, best, best.genes, o, null));
+    o.lambda = 8;
+    assertThrown(cmaStage(p, best, best.genes, o, new Exact));
 }
 
 unittest

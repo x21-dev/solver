@@ -14,8 +14,7 @@ pre-screened emitters, focus, and runs that stop and resume bit for bit,
 their state between iterations as plain data in `RunState`). Also the learned
 model (`model.d`: the ensemble trained on a run's evaluations, for the
 pre-screened stages and the model-guided emitters, over a problem's
-learning spec) and `fingerprint.d`, the check that a saved state belongs
-to the problem it is resumed on.
+surrogate members).
 
 solver is a source library: a dependent compiles its modules with its own,
 so calls into it inline as calls within one package do.
