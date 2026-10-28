@@ -1,7 +1,9 @@
 /// The problem interface: what a search (a CMA-ES stage, the archive)
 /// needs to know about the problem it optimises, and nothing more.
 ///
-/// DRAFT for review (docs/problem-interface.md). Nothing uses it yet.
+/// The design is in the note "Solver problem interface". pleaser uses the
+/// ranking helpers (`Ranking`, `clamp01`, `boundExcess`) so far; the searches
+/// move here next.
 ///
 /// A problem is a compile-time concept, not a class: the searches are
 /// templates over `P`, so every call into the problem is direct and can be
@@ -141,6 +143,7 @@ struct Ranking
     double terminalOffset = 50;
     double boundPenalty = 10;     // pleaser's BOUND_PENALTY, per squared gene unit
 
+    pragma(inline, true)
     double fitness(const Breach b, double value, double excess) const pure nothrow @nogc @safe
     {
         return (b.hard > 0 ? hardOffset + b.hard : b.terminal > 0 ? terminalOffset + b.terminal : -value)
@@ -154,12 +157,24 @@ struct Ranking
 enum Scoring : ubyte { all, feasibleOnly }
 
 /// A gene clamped to [0, 1] (NaN stays NaN).
+/// Inlined across packages, as it was within pleaser (decode calls it per gene).
+pragma(inline, true)
 double clamp01(double g) pure nothrow @nogc @safe
 {
     return g < 0 ? 0 : (g > 1 ? 1 : g);
 }
 
+/// Genes clamped to [0, 1], in an array of their own.
+double[] clamp01(const(double)[] x) pure nothrow @safe
+{
+    auto c = x.dup;
+    foreach (ref g; c)
+        g = clamp01(g);
+    return c;
+}
+
 /// How far genes are out of [0, 1]: the sum of the squared overshoots.
+pragma(inline, true)
 double boundExcess(const(double)[] x) pure nothrow @nogc @safe
 {
     double excess = 0;
