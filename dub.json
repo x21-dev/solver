@@ -1,0 +1,15 @@
+{
+    "name": "solver",
+    "description": "Deterministic black-box optimisation core extracted from pleaser: CMA-ES stages and a quality-diversity archive over a problem interface",
+    "authors": [
+        "x21-dev"
+    ],
+    "license": "proprietary",
+    "targetType": "library",
+    "sourcePaths": [
+        "source"
+    ],
+    "importPaths": [
+        "source"
+    ]
+}
