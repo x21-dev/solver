@@ -278,15 +278,15 @@ enum bool isSaveable(P) = isProblem!P && is(typeof((const ref P cp, const ref P.
 
 /// The value a search ranks `e` by: its objective less its soft breach;
 /// NaN when it wasn't scored.
-double valueOf(P)(const ref P p, const ref P.Eval e) if (isProblem!P)
+double valueOf(P, E)(const ref P p, const ref E e) if (isProblem!P && is(E == P.Eval))
 {
     return p.scored(e) ? value(p.objective(e), p.breach(e)) : double.nan;
 }
 
 /// `e`'s fitness for CMA-ES (lower is better), as the stages and emitters
 /// rank it: `genes` as sampled, before clamping.
-double fitnessOf(P)(const ref P p, const ref P.Eval e, const(double)[] genes, const ref Ranking r)
-    if (isProblem!P)
+double fitnessOf(P, E)(const ref P p, const ref E e, const(double)[] genes, const ref Ranking r)
+    if (isProblem!P && is(E == P.Eval))
 {
     immutable Breach b = p.breach(e);
     return r.fitness(b, b.feasible ? value(p.objective(e), b) : 0, boundExcess(genes));
