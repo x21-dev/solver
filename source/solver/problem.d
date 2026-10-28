@@ -1,7 +1,9 @@
 /// The problem interface: what a search (a CMA-ES stage, the archive)
 /// needs to know about the problem it optimises, and nothing more.
 ///
-/// DRAFT for review (docs/problem-interface.md). Nothing uses it yet.
+/// The design is in the note "Solver problem interface". pleaser uses the
+/// ranking helpers (`Ranking`, `clamp01`, `boundExcess`) so far; the searches
+/// move here next.
 ///
 /// A problem is a compile-time concept, not a class: the searches are
 /// templates over `P`, so every call into the problem is direct and can be
@@ -157,6 +159,15 @@ enum Scoring : ubyte { all, feasibleOnly }
 double clamp01(double g) pure nothrow @nogc @safe
 {
     return g < 0 ? 0 : (g > 1 ? 1 : g);
+}
+
+/// Genes clamped to [0, 1], in an array of their own.
+double[] clamp01(const(double)[] x) pure nothrow @safe
+{
+    auto c = x.dup;
+    foreach (ref g; c)
+        g = clamp01(g);
+    return c;
 }
 
 /// How far genes are out of [0, 1]: the sum of the squared overshoots.
