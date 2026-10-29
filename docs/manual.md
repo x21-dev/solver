@@ -18,11 +18,12 @@ Both tools are deterministic. The same problem, seed and options give the
 same bits on any thread count of one platform, provided the problem keeps
 the rules in [Determinism](#determinism). Across platforms runs differ.
 
-This manual describes solver as of step 5 of its extraction from pleaser
-(solver#6: `solver.model` and `RunState`) and the fixes that followed it
-(the model over the problem's surrogate members, one fingerprint check,
-checked stage options). Everything here was checked against that code. The worked example in
-[`docs/example`](example/source/app.d) builds and runs against it.
+This manual describes solver main as of 2026-10-29: the extraction from
+pleaser finished (solver#1 to #8), CI on Linux and Windows (#10), the
+checkpoint template (#11) and `solver.detmath` (#12). Everything here was
+checked against that code. The worked example in
+[`docs/example`](example/source/app.d) builds and runs against it, and CI
+runs it on Linux and Windows.
 [Gaps and caveats](#gaps-and-caveats) lists what solver doesn't do yet and
 the traps in the current API. Read it before you rely on a feature.
 
@@ -261,13 +262,13 @@ fingerprint and a `noFeasibleSeed` hint. Start from a copy of it.
 ### Dynamic problems
 
 `DynamicProblem` is an abstract class for problems behind virtual calls,
-such as a test or a binding to another language. It satisfies
+such as a test, a problem chosen at run time or a binding to another
+language of your own (solver has no bindings). It satisfies
 `isProblem`, `hasDescriptors` and `isSaveable`. Its `Eval` is `Outcome`,
 which has `scored`, `objective`, `violations`, `breach`, `descriptors` and
 `targets`. Override `genes`, `constraints`, `fingerprint`, `evaluateInto`,
 and `descriptorCount` if you use the archive. Each call covers a whole
-batch, so the dispatch cost is small next to an evaluation. Its comment
-mentions a C API and Python. Neither exists yet.
+batch, so the dispatch cost is small next to an evaluation.
 
 ---
 
@@ -1231,16 +1232,15 @@ one says what it costs you and how to work around it today.
    your own `O` with one (see [Ranking](#ranking)).
 4. **Restart and explorer rules are constants.** `RESTART_*`, `EXPLORE_*`
    and `AIM_SAMPLES` can't be changed per run.
-5. **`DynamicProblem` mentions a C API and Python.** Neither exists.
-6. **LDC only, and no dub registry package.** See
+5. **LDC only, and no dub registry package.** See
    [Adding solver to a project](#adding-solver-to-a-project).
-7. **Runs differ between platforms.** solver's own CMA-ES and explorers
+6. **Runs differ between platforms.** solver's own CMA-ES and explorers
    use the C maths library, whose last bits differ between glibc and the
    MSVC runtime, so the same run takes different paths on Linux and
    Windows. This is accepted, not planned to change: keep goldens per
    platform (see [Determinism](#determinism)). `solver.detmath` has
    platform-identical `log2` and `exp2` for a problem's own use.
-8. **Evaluation log, survey and model test tools stay in pleaser.**
+7. **Evaluation log, survey and model test tools stay in pleaser.**
    pleaser's `evals.bin` log, random survey and offline surrogate tests
    are mix-specific and stay there. Use the `evaluated` callback to build
    your own log.

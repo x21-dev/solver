@@ -28,12 +28,17 @@ Merged so far:
 | CI on Linux and Windows | #10 | |
 | Save format as documentation: a versioned checkpoint template | #11 | |
 | `solver.detmath`; runs differ between platforms, goldens per platform | #12 | |
+| Next-session prompt rewritten | #13 | |
+| Housekeeping: CLAUDE.md, SessionStart hook, `DynamicProblem`'s comments, the manual's introduction | #14 | |
+| Stages that stop and resume (`StageRun`); cma1 resume in pleaser (`--resume cma1.state`) | PRNUM | PLEASERPR |
 
 Every step that touched pleaser was verified with **byte-identical golden
 runs** (the same pleaser run before and after, byte-comparing
 `elites.state`, `progress.csv` and `best.txt`) and timings within noise.
-#10 to #12 changed nothing pleaser runs (pleaser's build, `dub test` and
-`./pleaser selftest` were run against #12 to show it).
+#10 to #14 changed nothing pleaser runs (pleaser's build, `dub test` and
+`./pleaser selftest` were run against #12 to show it). Stage resume did,
+and its golden runs are byte-identical apart from `cma1.state`'s new
+`stage` lines.
 
 Layout of solver:
 
@@ -53,7 +58,10 @@ Layout of solver:
 - `.github/workflows/ci.yml`: on pull requests and pushes to `main`, on
   `ubuntu-latest` and `windows-latest` with LDC 1.42.0: `dub test` in
   solver, `dub test` and `dub run --build=release` in `docs/example`.
-- No CLAUDE.md and no SessionStart hook of its own yet (item 1 below).
+- `CLAUDE.md`: how to work here (checks, pleaser, determinism, D style).
+- `.claude/hooks/session-start.sh`: installs LDC 1.42.0 in cloud sessions
+  opened on solver, so `dub test` works without opening the session on
+  pleaser.
 
 Related repositories, checked out side by side as `../pleaser`,
 `../satisfaction`, `../solver`:
@@ -98,25 +106,7 @@ In the order I'd suggest. Each is one branch and one PR to `main` on
 x21-dev/solver, plus a matching pleaser PR only where pleaser has to
 change.
 
-### 1. Housekeeping (small; nothing pleaser runs changes)
-
-- **solver CLAUDE.md**: the conventions in "How to work" and "D style"
-  below, the checks to run before pushing, the platform decision above,
-  and that `docs/example/source/checkpoint.d` and the manual's copy change
-  together.
-- **SessionStart hook** for cloud sessions opened on solver: install LDC
-  1.42.0 the way satisfaction's `.claude/hooks/session-start.sh` does (it
-  is what pleaser's hook calls), so `dub test` works without opening the
-  session on pleaser. solver has no dub dependencies to fetch.
-- **Gap 6**: `DynamicProblem`'s comments in `source/solver/problem.d` (and
-  the manual) mention a C API and Python, which don't exist. Say what it is
-  for today (dynamic dispatch, tests) and drop the rest, or ask Dev whether
-  a C API is planned.
-- **The manual's introduction** still says it describes solver "as of step
-  5 of its extraction ... and the fixes that followed it". Bring it up to
-  date (and the "true of solver main on" date in Gaps and caveats).
-
-### 2. Gap 3: a `ranking` field in `ArchiveOptions`
+### 1. Gap 3: a `ranking` field in `ArchiveOptions`
 
 `ArchiveOptions` has no `ranking`, so an objective outside about −50 to
 +50 needs a custom options type. Adding the field (default: today's
@@ -125,7 +115,7 @@ and is compared on resume, and pleaser saves the options of a run in
 `elites.state` field by field. Check that pleaser's archive is unchanged:
 golden runs, and a resume of an `elites.state` saved before the change.
 
-### 3. Gap 2: the terminal tier through stage pre-screening
+### 2. Gap 2: the terminal tier through stage pre-screening
 
 `StageModel.predictScore` returns one violation, ranked as hard, and
 `LearnedModel` reports `hard + terminal` there, so a predicted terminal
@@ -136,24 +126,23 @@ which pleaser implements (`CandidateModel = StageModel!Evaluation` in
 have no terminal-tier limits, so its runs should stay byte-identical;
 prove it with golden runs.
 
-### 4. Gap 4: restart and explorer rules as options
+### 3. Gap 4: restart and explorer rules as options
 
 `RESTART_*`, `EXPLORE_*` and `AIM_SAMPLES` are constants. pleaser
 re-exports them from `pleaser/source/pleaser/archive.d`, where its archive
 code uses them. Make them options whose defaults are today's
 values; pleaser's runs must stay byte-identical.
 
-### 5. Gap 5: stage resume (larger; ask before starting)
-
-A stage runs to its end. A resumable stage (its state as plain data, like
-the archive's `RunState`) would let pleaser checkpoint its CMA-ES stages.
-Worth it only if Dev wants pleaser to use it; scope it with Dev first.
-
 ### Not proposed
 
-- **Gap 7, a dub registry package**: solver's licence is proprietary, so
+The manual's gaps were renumbered when the old gap 6 (`DynamicProblem`
+mentioning a C API and Python, which don't exist) and gap 5 (no stage
+resume) were closed; the numbers here are the current ones. A C API or
+Python binding would be new work to scope with Dev.
+
+- **Gap 5, a dub registry package**: solver's licence is proprietary, so
   publishing is Dev's call, not a task.
-- **Gap 9**: pleaser's evaluation log, survey and model-test tools are
+- **Gap 7**: pleaser's evaluation log, survey and model-test tools are
   mix-specific and stay in pleaser.
 
 ## How to work

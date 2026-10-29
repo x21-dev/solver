@@ -10,9 +10,9 @@
 /// inlined, and the problem keeps its own evaluation type `P.Eval` (pleaser
 /// keeps its `Evaluation` as it is, with its own sums in its own order).
 /// That is how pleaser runs through it with no loss of speed and the same
-/// bits. A problem that wants dynamic dispatch (one written in Python and
-/// reached through the C API, or a quick test) derives from `DynamicProblem`
-/// below, which is a `P` like any other.
+/// bits. A problem that wants dynamic dispatch (a quick test, a problem
+/// chosen at run time) derives from `DynamicProblem` below, which is a `P`
+/// like any other.
 ///
 /// The search works in normalised gene space: `dimension` genes, each in
 /// [0, 1] when evaluated. CMA-ES may sample outside, and the searches pass
@@ -443,8 +443,8 @@ static assert(isGrid!BinnedGrid);
 // Dynamic problems
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A generic evaluation, for problems without a type of their own (the C
-/// API, Python, tests).
+/// A generic evaluation, for problems without a type of their own
+/// (`DynamicProblem`, tests).
 struct Outcome
 {
     bool     scored;
@@ -455,9 +455,9 @@ struct Outcome
     double[] targets;         // surrogate targets; NaN where not measured
 }
 
-/// A problem by virtual calls, for implementations across a language
-/// boundary: one call per batch, so the dispatch costs nothing next to an
-/// evaluation. Satisfies `isProblem`, `hasDescriptors` and `isSaveable`.
+/// A problem by virtual calls, for a test, a problem chosen at run time or
+/// a binding to another language (solver has none): one call per batch, so
+/// the dispatch costs nothing next to an evaluation. Satisfies `isProblem`, `hasDescriptors` and `isSaveable`.
 abstract class DynamicProblem
 {
     alias Eval = Outcome;
