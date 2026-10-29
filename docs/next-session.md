@@ -1,9 +1,11 @@
 # Next session: solver follow-up work
 
 This is a self-contained prompt for a fresh Claude Code session. Read it all
-before starting, then do the three tasks below in order.
+before starting. The work it lists is proposed, not yet approved: ask Dev
+which items to take on (and in what order) in your first reply, before
+changing anything.
 
-## Where things stand (2026-10-28)
+## Where things stand (2026-10-29)
 
 solver is the deterministic black-box optimisation core extracted from
 [pleaser](https://github.com/x21-dev/pleaser): CMA-ES stages and a
@@ -12,7 +14,7 @@ learned surrogate model. It is a dub **source library** (`targetType:
 sourceLibrary`), LDC only (developed with LDC 1.42.0), no dependencies beyond
 Phobos and `ldc.simd`.
 
-The extraction is finished and merged:
+Merged so far:
 
 | Step | solver | pleaser |
 |---|---|---|
@@ -22,11 +24,16 @@ The extraction is finished and merged:
 | The archive (CMA-MAE over descriptors on a grid) | #5 | #77 |
 | Learned model, archive run state, fingerprint check | #6 | #78 |
 | Developer manual and worked example | #7 | |
-| Follow-up fixes: model over the problem's surrogate members, one fingerprint check, checked stage options | #8 (merged) | #79 (merged) |
+| Model over the problem's surrogate members, one fingerprint check, checked stage options | #8 | #79 |
+| CI on Linux and Windows | #10 | |
+| Save format as documentation: a versioned checkpoint template | #11 | |
+| `solver.detmath`; runs differ between platforms, goldens per platform | #12 | |
 
 Every step that touched pleaser was verified with **byte-identical golden
-runs** (the same pleaser run before and after the change, byte-comparing
+runs** (the same pleaser run before and after, byte-comparing
 `elites.state`, `progress.csv` and `best.txt`) and timings within noise.
+#10 to #12 changed nothing pleaser runs (pleaser's build, `dub test` and
+`./pleaser selftest` were run against #12 to show it).
 
 Layout of solver:
 
@@ -34,119 +41,152 @@ Layout of solver:
   grids, `fingerprintMismatch`), `stage.d` (`cmaStage`), `archive.d`
   (`runArchive`, `RunState`, `runState`/`restoreRun`), `model.d`
   (`LearnedModel`), `ensemble.d`, `cmaes.d`, `bytes.d`, `rng.d`
-  (`SplitMix64`).
+  (`SplitMix64`), `detmath.d` (`log2d`/`exp2d`, scalar and 4-lane).
 - `docs/manual.md`: the developer manual. Its "Gaps and caveats" section
-  lists what solver doesn't do yet.
-- `docs/example/`: the worked example (`app.d`, and `checkpoint.d`, a
-  60-line generic struct writer over `solver.bytes.Bytes`).
-- No CI, no CLAUDE.md, no SessionStart hook of its own. Tests
-  (`dub test --compiler=ldc2`, unittests in every module) have **only been
-  run on Linux**.
+  lists what solver doesn't do yet; the proposals below come from it.
+- `docs/example/`: the worked example. `app.d` runs a stage and an archive,
+  saves the archive part way through `checkpoint.d`, resumes and checks
+  the result against the uninterrupted run bit for bit. `checkpoint.d` is
+  the manual's checkpoint template, verbatim: a `static assert` in `app.d`
+  fails the build when the manual's copy and the file differ, so change
+  both together.
+- `.github/workflows/ci.yml`: on pull requests and pushes to `main`, on
+  `ubuntu-latest` and `windows-latest` with LDC 1.42.0: `dub test` in
+  solver, `dub test` and `dub run --build=release` in `docs/example`.
+- No CLAUDE.md and no SessionStart hook of its own yet (item 1 below).
 
 Related repositories, checked out side by side as `../pleaser`,
 `../satisfaction`, `../solver`:
 
 - **pleaser** depends on solver by path (`"solver": { "path": "../solver" }`).
-  Its Windows build links with `/STACK:8388608` (`lflags-windows` in its
-  `dub.json`) because its 75-cell `Archive` lives by value on the stack.
-  pleaser's `.claude/hooks/session-start.sh` clones satisfaction and solver
-  and installs LDC 1.42.0 and the dub packages; open the session on pleaser
-  (or run that hook) when you need to build pleaser. Read
-  `pleaser/CLAUDE.md` before changing anything there.
+  Its Windows build links with `/STACK:8388608` because its 75-cell
+  `Archive` lives by value on the stack. pleaser's
+  `.claude/hooks/session-start.sh` clones satisfaction and solver and
+  installs LDC 1.42.0 and the dub packages (satisfaction and solver must be
+  attached to the session for the clones). Open the session on pleaser, or
+  run that hook, when you need to build pleaser. Read `pleaser/CLAUDE.md`
+  before changing anything there. pleaser has no CI.
 - **satisfaction** (the stimulation analyser) is pleaser's objective
   function and the gold standard for it. It is **not** a solver consumer and
   is never changed from pleaser or solver.
 
-## The tasks, in order
+## Decisions already made
 
-The developer (Dev) approved this direction. Do them in this order.
+Don't reopen these without Dev:
 
-### 1. Automated tests (CI) on Linux and Windows
+- **Runs differ between platforms, and that is accepted.** LDC turns
+  `exp`, `log`, `pow`, `sin`, `cos` into calls to the C maths library,
+  whose last bits differ between glibc and the MSVC runtime. solver's own
+  CMA-ES (normal samples, step size), the explorers' noise and log-scaled
+  genes use it, and so do pleaser's render and satisfaction, so the same
+  run takes different paths on Linux and Windows. Golden runs and reference
+  outputs are kept **per platform**; a test that needs an event during a
+  run must force it. Making whole runs platform-identical (replacing the C
+  maths functions process-wide, which would also shift satisfaction's
+  results) was sized at about a week and declined.
+- **No checkpoint API.** The save format is documentation: the manual's
+  template (`docs/example/source/checkpoint.d`), copied and adapted by each
+  project. pleaser keeps its own text formats (`elites.state`:
+  `elitesText`/`parseElites` in `pleaser/source/pleaser/archive.d`).
+- **pleaser and its plugins keep their own `pleaser.detmath` and
+  `pleaser.rng`.** `solver.detmath` and `solver.rng` are identical copies;
+  don't switch pleaser's code to them.
 
-Dev hasn't explicitly confirmed this one. Ask once in your first reply, but
-start the work on a branch anyway; it's reversible.
+## Proposed next steps
 
-- Add a GitHub Actions workflow to solver (`.github/workflows/`) that, on
-  `ubuntu-latest` and `windows-latest`, installs **LDC 1.42.0** (pin it, for
-  example with `dlang-community/setup-dlang` and `compiler: ldc-1.42.0`),
-  then runs `dub test --compiler=ldc2` and builds and runs the worked
-  example (`cd docs/example && dub run --compiler=ldc2 --build=release`).
-  The example checks that a resumed run's archive equals the uninterrupted
-  run's bit for bit, so it is a test too.
-- Expect Windows to surface things Linux never did: the default 1 MB main
-  thread stack (an exit with no output and code -1073741571 / 0xC00000FD is
-  a stack overflow; see the manual's Performance section on `N > 0`
-  archives), path and line-ending differences, and last-bit differences from
-  the MSVC runtime's `exp`/`log`. A test that needs an event during a run
-  (an explorer aimed, a restart) must force it so it happens on both
-  platforms, not rely on a run that happens to produce it on Linux.
-- Fix real failures in solver. Don't skip, disable or loosen a test to get
-  green. If a fix changes solver code pleaser runs through, it is a
-  pleaser-touching change: do the golden-run and timing checks below.
+In the order I'd suggest. Each is one branch and one PR to `main` on
+x21-dev/solver, plus a matching pleaser PR only where pleaser has to
+change.
 
-### 2. Copy detmath (and the RNG) into solver
+### 1. Housekeeping (small; nothing pleaser runs changes)
 
-- The RNG is **already in solver**: `solver.rng.SplitMix64` is identical to
-  `pleaser.rng.SplitMix64` (it moved in #1). pleaser's archive imports
-  `solver.rng`; the rest of pleaser, the x21 Strip plugin and the reverb
-  plugin keep `pleaser.rng`. Nothing to copy; just make the manual say
-  clearly that `solver.rng` is the RNG a problem should use.
-- Copy `pleaser/source/pleaser/detmath.d` to
-  `source/solver/detmath.d` as `module solver.detmath`, unchanged apart
-  from the module name: `log2d`/`exp2d` (scalar) and `log2v`/`exp2v`
-  (4-lane `__vector(double[4])`), every lane bit-identical to the scalar,
-  plain IEEE arithmetic so every platform gives the same bits. Bring its
-  unittests, and add a test with reference bit patterns so CI checks the
-  results are the same on Linux and Windows.
-- **pleaser and the plugins keep their own copies** (`pleaser.detmath`,
-  used by `dsp.d`, `cost.d`, `surrogate.d`, and by `plugin/` and `strip/`).
-  Don't switch them to solver's. So pleaser's code doesn't change; still
-  build pleaser and run `dub test` and `./pleaser selftest` against the new
-  solver to show nothing broke.
-- Update `docs/manual.md`: Determinism item 5, gap 8 ("No platform-identical
-  maths") and the module reference table, plus a line in `README.md`.
+- **solver CLAUDE.md**: the conventions in "How to work" and "D style"
+  below, the checks to run before pushing, the platform decision above,
+  and that `docs/example/source/checkpoint.d` and the manual's copy change
+  together.
+- **SessionStart hook** for cloud sessions opened on solver: install LDC
+  1.42.0 the way satisfaction's `.claude/hooks/session-start.sh` does (it
+  is what pleaser's hook calls), so `dub test` works without opening the
+  session on pleaser. solver has no dub dependencies to fetch.
+- **Gap 6**: `DynamicProblem`'s comments in `source/solver/problem.d` (and
+  the manual) mention a C API and Python, which don't exist. Say what it is
+  for today (dynamic dispatch, tests) and drop the rest, or ask Dev whether
+  a C API is planned.
+- **The manual's introduction** still says it describes solver "as of step
+  5 of its extraction ... and the fixes that followed it". Bring it up to
+  date (and the "true of solver main on" date in Gaps and caveats).
 
-### 3. Save format as documentation only
+### 2. Gap 3: a `ranking` field in `ArchiveOptions`
 
-No new solver API. Dev's view: a generic checkpoint format belongs in the
-documentation as a template and code that developers copy verbatim or
-adapt to their project.
+`ArchiveOptions` has no `ranking`, so an objective outside about −50 to
++50 needs a custom options type. Adding the field (default: today's
+ranking) is an API addition, but `ArchiveOptions` is part of `RunState`
+and is compared on resume, and pleaser saves the options of a run in
+`elites.state` field by field. Check that pleaser's archive is unchanged:
+golden runs, and a resume of an `elites.state` saved before the change.
 
-- Turn the example's `docs/example/source/checkpoint.d` and the manual's
-  "Stopping, saving and resuming → To a file" section into a documented
-  template in the manual: the full writer/reader code, what to save (run
-  state, archive with thresholds and alpha, causes, model bytes,
-  fingerprint), and how to adapt it. Show at least how to add a format
-  version header and how to stay readable when a field is added (the
-  current writer's format changes whenever any saved type gains a field).
-  pleaser's `elites.state` text format (`pleaser/source/pleaser/state.d`)
-  is a real example of a versioned format to point at.
-- Keep the worked example compiling against the template, and keep its
-  bit-for-bit resume check.
-- Update gap 1 ("No generic checkpoint format") to say the template is the
-  intended route rather than a missing feature.
+### 3. Gap 2: the terminal tier through stage pre-screening
+
+`StageModel.predictScore` returns one violation, ranked as hard, and
+`LearnedModel` reports `hard + terminal` there, so a predicted terminal
+breach ranks as a hard one in a pre-screened stage (the archive's model
+interface keeps the tiers). Fixing it changes the `StageModel` interface,
+which pleaser implements (`CandidateModel = StageModel!Evaluation` in
+`pleaser/source/pleaser/optimize.d`): a pleaser PR too. pleaser appears to
+have no terminal-tier limits, so its runs should stay byte-identical;
+prove it with golden runs.
+
+### 4. Gap 4: restart and explorer rules as options
+
+`RESTART_*`, `EXPLORE_*` and `AIM_SAMPLES` are constants. pleaser
+re-exports them from `pleaser/source/pleaser/archive.d`, where its archive
+code uses them. Make them options whose defaults are today's
+values; pleaser's runs must stay byte-identical.
+
+### 5. Gap 5: stage resume (larger; ask before starting)
+
+A stage runs to its end. A resumable stage (its state as plain data, like
+the archive's `RunState`) would let pleaser checkpoint its CMA-ES stages.
+Worth it only if Dev wants pleaser to use it; scope it with Dev first.
+
+### Not proposed
+
+- **Gap 7, a dub registry package**: solver's licence is proprietary, so
+  publishing is Dev's call, not a task.
+- **Gap 9**: pleaser's evaluation log, survey and model-test tools are
+  mix-specific and stay in pleaser.
 
 ## How to work
 
-- Each task on its own branch with a PR to `main` on x21-dev/solver (and a
-  matching pleaser PR only if pleaser has to change). One PR per task.
-- Before pushing a solver change: `dub test --compiler=ldc2` in solver, and
-  `cd docs/example && dub run --compiler=ldc2 --build=release`.
+- One branch and one PR per item, on x21-dev/solver (and pleaser only if
+  it has to change).
+- Before pushing a solver change: `dub test --compiler=ldc2` in solver,
+  and in `docs/example` both `dub test --compiler=ldc2` and
+  `dub run --compiler=ldc2 --build=release`. CI runs the same on Linux and
+  Windows; a PR is done when both are green.
 - **Any change that touches what pleaser runs** (solver code pleaser
   imports, or pleaser itself) needs, before and after:
   - pleaser's own checks from `pleaser/CLAUDE.md`:
     `dub build --compiler=ldc2 --build=release-native`,
     `dub test --compiler=ldc2`, `./pleaser selftest`;
   - a golden run: the same `pleaser optimize` run (same stems, seed,
-    settings) on `main` and on the branch, byte-comparing `elites.state`,
-    `progress.csv` and `best.txt`. They must be identical;
+    settings) on `main` and on the branch, on the same platform,
+    byte-comparing `elites.state`, `progress.csv` and `best.txt`. They
+    must be identical;
   - timings within noise (`./pleaser bench`, or the golden run's wall
     time, a few repeats each side).
-  Report both in the PR. Long runs may go to pleaser's GCP runner
-  (`pleaser/tools/runner/README.md`) when `GCP_SA_KEY_B64` is set; never
-  print or commit that key, and stop the VM as soon as the work is done.
-- Results must stay deterministic: bit-identical on any thread count. Seeded
-  noise only through `SplitMix64`, never `std.random`.
+  Report both in the PR. The selftest takes longer than 10 minutes on a
+  4-core session container; it and long runs can go to pleaser's GCP
+  runner (`pleaser/tools/runner/README.md`, about 10 minutes for build and
+  selftest) when `GCP_SA_KEY_B64` is set. Never print or commit that key,
+  and stop the VM as soon as the work is done.
+- When pleaser builds against a solver branch, keep `../solver` checked
+  out on that branch until the build and runs finish: switching it in the
+  middle mixes two versions. Use `git worktree` for other solver work in
+  the meantime.
+- Results must stay deterministic: bit-identical on any thread count of
+  one platform. Seeded noise only through `SplitMix64`, never
+  `std.random`.
 - Never change satisfaction.
 
 ## D style (target LDC)
