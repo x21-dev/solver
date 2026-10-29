@@ -31,6 +31,8 @@ Merged so far:
 | Next-session prompt rewritten | #13 | |
 | Housekeeping: CLAUDE.md, SessionStart hook, `DynamicProblem`'s comments, the manual's introduction | #14 | |
 | Stages that stop and resume (`StageRun`); cma1 resume in pleaser (`--resume cma1.state`) | #15 | #80 |
+| Manual: setting the ranking's offsets | #16 | |
+| `ranking` and the restart and explorer rules (`ArchiveRules`) as archive options | PRNUM | |
 
 Every step that touched pleaser was verified with **byte-identical golden
 runs** (the same pleaser run before and after, byte-comparing
@@ -100,25 +102,24 @@ Don't reopen these without Dev:
   `pleaser.rng`.** `solver.detmath` and `solver.rng` are identical copies;
   don't switch pleaser's code to them.
 
+Parked by Dev (2026-10-29); raise only if something changes:
+
+- **A ranking safety check** (throw when a value reaches the offsets): not
+  much value for now; the manual's "Setting the offsets" covers it.
+- **CI for pleaser**: GitHub Actions' costs and limits outweigh it for a
+  project with little development left. The selftest runs on the GCP
+  runner (Linux) before pushing, and Dev runs it on Windows now and then.
+- **Resuming a cma1 or archive run on another platform**: not needed.
+  Dev resumed a 480-gene cma1 on Windows past 9000 evaluations and is
+  happy with it.
+
 ## Proposed next steps
 
 In the order I'd suggest. Each is one branch and one PR to `main` on
 x21-dev/solver, plus a matching pleaser PR only where pleaser has to
 change.
 
-### 1. Gap 3: a `ranking` field in `ArchiveOptions`
-
-`ArchiveOptions` has no `ranking`, so an objective whose range reaches
-the default offsets needs a custom options type. The manual's "Setting
-the offsets" (under Ranking) says how to size them (2026-10-29). pleaser
-doesn't need the field: it matters once a project with another scale
-uses the archive. Adding the field (default: today's
-ranking) is an API addition, but `ArchiveOptions` is part of `RunState`
-and is compared on resume, and pleaser saves the options of a run in
-`elites.state` field by field. Check that pleaser's archive is unchanged:
-golden runs, and a resume of an `elites.state` saved before the change.
-
-### 2. Gap 2: the terminal tier through stage pre-screening
+### 1. Gap 2: the terminal tier through stage pre-screening
 
 `StageModel.predictScore` returns one violation, ranked as hard, and
 `LearnedModel` reports `hard + terminal` there, so a predicted terminal
@@ -129,23 +130,16 @@ which pleaser implements (`CandidateModel = StageModel!Evaluation` in
 have no terminal-tier limits, so its runs should stay byte-identical;
 prove it with golden runs.
 
-### 3. Gap 4: restart and explorer rules as options
-
-`RESTART_*`, `EXPLORE_*` and `AIM_SAMPLES` are constants. pleaser
-re-exports them from `pleaser/source/pleaser/archive.d`, where its archive
-code uses them. Make them options whose defaults are today's
-values; pleaser's runs must stay byte-identical.
-
 ### Not proposed
 
-The manual's gaps were renumbered when the old gap 6 (`DynamicProblem`
-mentioning a C API and Python, which don't exist) and gap 5 (no stage
-resume) were closed; the numbers here are the current ones. A C API or
-Python binding would be new work to scope with Dev.
+The manual's gaps were renumbered as they closed (the C API and Python
+mentions, stage resume, the archive's ranking and its rules); the numbers
+here are the current ones. A C API or Python binding would be new work to
+scope with Dev.
 
-- **Gap 5, a dub registry package**: solver's licence is proprietary, so
+- **Gap 3, a dub registry package**: solver's licence is proprietary, so
   publishing is Dev's call, not a task.
-- **Gap 7**: pleaser's evaluation log, survey and model-test tools are
+- **Gap 5**: pleaser's evaluation log, survey and model-test tools are
   mix-specific and stay in pleaser.
 
 ## How to work
