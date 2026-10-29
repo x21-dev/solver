@@ -10,9 +10,11 @@ that stop and resume bit for bit, their state as plain data in `StageRun`). Also
 surrogate ensemble (`ensemble.d`: small ReLU networks trained by Adam,
 deterministic on any thread count) and `bytes.d`, the little-endian
 encoding of saved states. And the archive (`archive.d`: CMA-MAE over a
-problem's descriptors on a grid, with explorers, model-guided and
+problem's descriptors on a grid, with explorers that head for cells not
+discovered yet, model-guided and
 pre-screened emitters, focus, and runs that stop and resume bit for bit,
-their state between iterations as plain data in `RunState`). Also the learned
+their state between iterations as plain data in `RunState`; its ranking
+and its restart and explorer rules, `ArchiveRules`, are options). Also the learned
 model (`model.d`: the ensemble trained on a run's evaluations, for the
 pre-screened stages and the model-guided emitters, over a problem's
 surrogate members). And `detmath.d`: `log2` and `exp2` (scalar and 4-lane) in plain IEEE

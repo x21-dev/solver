@@ -14,12 +14,16 @@
 /// keeps the best candidate ever found in each cell (the paper's result
 /// archive).
 ///
+/// solver adds an aim CMA-MAE reaches only indirectly (through its
+/// thresholds and, once they have caught up, density descent): cells no
+/// candidate has found yet. Explorers (the last emitters) head for empty
+/// cells, down the grid's distance, and take a new target when they reach
+/// theirs or get stuck; the improvers refine what the archive holds.
+///
 /// Infeasible candidates never enter the archive; emitters rank them below
 /// every feasible candidate, by how far over the limits they are. An
 /// improver restarts from a random elite when a few generations add
-/// nothing, or are nearly all infeasible. Explorers (the last emitters)
-/// head for empty cells instead, down the grid's distance, and take a new
-/// target when they reach theirs or get stuck.
+/// nothing, or are nearly all infeasible.
 ///
 /// With a model (`ArchiveSurrogate`), explorers and optionally improvers
 /// sample a larger population and render the share the model ranks best
@@ -43,22 +47,57 @@ import solver.problem;
 import solver.rng : SplitMix64;
 import solver.stage : hasCauses, pickRendered;
 
-/// Restart rules: an improver restarts after this many generations in a
-/// row in which no candidate beat its cell's threshold; any emitter when
-/// its last this many generations were at least RESTART_INFEASIBLE
-/// infeasible, or its step size fell below RESTART_SIGMA.
-enum size_t RESTART_GENERATIONS = 5;
-enum double RESTART_INFEASIBLE = 0.9;
-enum double RESTART_SIGMA = 1e-4;
-/// Explorers: an explorer gives its target up after this many generations
-/// without getting closer by EXPLORE_PROGRESS, and that cell is skipped for
-/// EXPLORE_BLOCK iterations.
-enum size_t EXPLORE_STALE = 10;
-enum double EXPLORE_PROGRESS = 0.01;
-enum size_t EXPLORE_BLOCK = 30;
-/// Model-aimed explorers: points sampled around each elite, at the
-/// explorers' step size.
-enum size_t AIM_SAMPLES = 200;
+/// When the archive restarts an emitter and when an explorer gives its
+/// target up (`ArchiveOptions.rules`; the manual's "Restart and explorer
+/// rules" says when and how to change them). The defaults are pleaser's:
+/// CMA-MAE itself restarts only when CMA-ES converges, and has no
+/// explorers (the manual's "Where the rules come from").
+struct ArchiveRules
+{
+    /// An improver restarts, from a random elite, after this many
+    /// generations in a row in which no candidate beat its cell's threshold.
+    size_t idleGenerations = 5;
+    /// Any emitter restarts when its last `infeasibleGenerations`
+    /// generations had at least `infeasibleShare` of their candidates over
+    /// a hard or terminal limit.
+    size_t infeasibleGenerations = 5;
+    double infeasibleShare = 0.9;
+    /// Any emitter restarts when CMA-ES's step size falls below this, in
+    /// gene units.
+    double minSigma = 1e-4;
+    /// An explorer gives its target up after `staleGenerations` generations
+    /// without getting closer to it by `minProgress` (in the grid's
+    /// distance units: bin widths for BinnedGrid), and no explorer aims at
+    /// that cell for `blockIterations` iterations.
+    size_t staleGenerations = 10;
+    double minProgress = 0.01;
+    size_t blockIterations = 30;
+    /// Model-aimed explorers (surrogateAim): points scored on the model
+    /// around each elite, at the explorers' step size.
+    size_t aimSamples = 200;
+
+    /// Throws when a rule is out of its range.
+    void check() const pure @safe
+    {
+        import std.math : isFinite;
+        enforce(idleGenerations >= 1 && infeasibleGenerations >= 1 && staleGenerations >= 1,
+                "the archive's rules: idleGenerations, infeasibleGenerations and staleGenerations must be at least 1");
+        enforce(infeasibleShare > 0 && infeasibleShare <= 1,
+                "the archive's rules: infeasibleShare must be above 0, at most 1");
+        enforce(minSigma >= 0 && isFinite(minSigma) && minProgress >= 0 && isFinite(minProgress),
+                "the archive's rules: minSigma and minProgress must be finite and not negative");
+    }
+}
+
+/// ArchiveRules' defaults under their former names, for code that names
+/// them (pleaser's reports).
+enum size_t RESTART_GENERATIONS = ArchiveRules.init.idleGenerations;
+enum double RESTART_INFEASIBLE = ArchiveRules.init.infeasibleShare;   /// ditto
+enum double RESTART_SIGMA = ArchiveRules.init.minSigma;               /// ditto
+enum size_t EXPLORE_STALE = ArchiveRules.init.staleGenerations;       /// ditto
+enum double EXPLORE_PROGRESS = ArchiveRules.init.minProgress;         /// ditto
+enum size_t EXPLORE_BLOCK = ArchiveRules.init.blockIterations;        /// ditto
+enum size_t AIM_SAMPLES = ArchiveRules.init.aimSamples;               /// ditto
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The archive
@@ -231,8 +270,9 @@ size_t[] selectDiverse(A, G)(const ref A a, const ref G grid, double within, siz
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// The options runArchive reads. A problem may bring its own options type
-/// with these fields and more (pleaser's adds its processing cost), and an
-/// optional `Ranking ranking`; `Ranking.init` without one.
+/// with these fields and more (pleaser's adds its processing cost); in one
+/// of its own, `ranking` and `rules` are optional (`Ranking.init` and
+/// `ArchiveRules.init` without them).
 struct ArchiveOptions
 {
     size_t evals = 8000;      // budget, rounded up to whole iterations
@@ -261,9 +301,13 @@ struct ArchiveOptions
     bool surrogateImprovers = false;
     /// Model-aimed explorers: an explorer aimed at a new target once the
     /// model is ready starts where the model predicts nearest the target
-    /// within the limits, of AIM_SAMPLES points around each elite (and the
-    /// elites), instead of from the elite nearest it in bins.
+    /// within the limits, of rules.aimSamples points around each elite (and
+    /// the elites), instead of from the elite nearest it in bins.
     bool surrogateAim = false;
+    /// How candidates rank (the manual's "Setting the offsets").
+    Ranking ranking;
+    /// When emitters restart and explorers give a target up.
+    ArchiveRules rules;
 }
 
 /// What a model gives the archive: it learns every evaluation, trains
@@ -304,11 +348,11 @@ struct ScreenStats
 enum RestartReason
 {
     none,                     // it doesn't
-    idle,                     // improver: no candidate beat its cell's threshold for RESTART_GENERATIONS generations
-    infeasible,               // its last RESTART_GENERATIONS generations were nearly all over the limits
-    converged,                // its step size collapsed (below RESTART_SIGMA)
+    idle,                     // improver: no candidate beat its cell's threshold for rules.idleGenerations generations
+    infeasible,               // its last rules.infeasibleGenerations generations were nearly all over the limits
+    converged,                // its step size collapsed (below rules.minSigma)
     reached,                  // explorer: its target holds an elite now
-    stuck,                    // explorer: no closer to its target for EXPLORE_STALE generations
+    stuck,                    // explorer: no closer to its target for rules.staleGenerations generations
 }
 
 /// A restart reason by its name, "" for none.
@@ -536,38 +580,41 @@ double predictedFitness(G)(const ref G grid, double objective, const Breach brea
     return ranking.fitness(breach, gain, boundExcess(x));
 }
 
-/// Whether an emitter's last RESTART_GENERATIONS generations (`infeasible`:
-/// per generation, its candidates over the limits) were nearly all over
-/// the limits.
-bool nearlyAllInfeasible(const(size_t)[] infeasible, size_t lambda) pure nothrow @nogc @safe
+/// Whether an emitter's last `r.infeasibleGenerations` generations
+/// (`infeasible`: per generation, its candidates over the limits) were
+/// nearly all over the limits.
+bool nearlyAllInfeasible(const(size_t)[] infeasible, size_t lambda, const ArchiveRules r = ArchiveRules.init)
+    pure nothrow @nogc @safe
 {
-    if (infeasible.length < RESTART_GENERATIONS)
+    if (infeasible.length < r.infeasibleGenerations)
         return false;
     size_t recent = 0;
-    foreach (v; infeasible[$ - RESTART_GENERATIONS .. $])
+    foreach (v; infeasible[$ - r.infeasibleGenerations .. $])
         recent += v;
-    return recent >= RESTART_INFEASIBLE * RESTART_GENERATIONS * lambda;
+    return recent >= r.infeasibleShare * r.infeasibleGenerations * lambda;
 }
 
 /// Whether an explorer heading for its target gives it up after a
 /// generation, and why: reached (`filled`), stuck, nearly all infeasible,
 /// or converged (its step size `sigma`).
-RestartReason explorerRestart(const ref Emitter e, bool filled, double sigma, size_t lambda) pure nothrow @nogc @safe
+RestartReason explorerRestart(const ref Emitter e, bool filled, double sigma, size_t lambda,
+                              const ArchiveRules r = ArchiveRules.init) pure nothrow @nogc @safe
 {
     return filled ? RestartReason.reached
-         : e.stale >= EXPLORE_STALE ? RestartReason.stuck
-         : nearlyAllInfeasible(e.infeasible, lambda) ? RestartReason.infeasible
-         : sigma < RESTART_SIGMA ? RestartReason.converged
+         : e.stale >= r.staleGenerations ? RestartReason.stuck
+         : nearlyAllInfeasible(e.infeasible, lambda, r) ? RestartReason.infeasible
+         : sigma < r.minSigma ? RestartReason.converged
          : RestartReason.none;
 }
 
 /// Whether an improver restarts after a generation, and why: idle, nearly
 /// all infeasible, or converged (its step size `sigma`).
-RestartReason improverRestart(const ref Emitter e, double sigma, size_t lambda) pure nothrow @nogc @safe
+RestartReason improverRestart(const ref Emitter e, double sigma, size_t lambda,
+                              const ArchiveRules r = ArchiveRules.init) pure nothrow @nogc @safe
 {
-    return e.idle >= RESTART_GENERATIONS ? RestartReason.idle
-         : nearlyAllInfeasible(e.infeasible, lambda) ? RestartReason.infeasible
-         : sigma < RESTART_SIGMA ? RestartReason.converged
+    return e.idle >= r.idleGenerations ? RestartReason.idle
+         : nearlyAllInfeasible(e.infeasible, lambda, r) ? RestartReason.infeasible
+         : sigma < r.minSigma ? RestartReason.converged
          : RestartReason.none;
 }
 
@@ -614,6 +661,15 @@ size_t pickTarget(R, G)(const ref R res, const ref G grid, size_t k) pure
         }
     }
     return best;
+}
+
+/// The rules a run's options give.
+private ArchiveRules rulesOf(O)(const ref O opts)
+{
+    static if (__traits(hasMember, O, "rules"))
+        return opts.rules;
+    else
+        return ArchiveRules.init;
 }
 
 /// The ranking a run's options give.
@@ -674,6 +730,7 @@ template Archiving(P, G, O = ArchiveOptions, size_t N = 0, double minScore = 0)
                    scope void delegate(const ref Batch) evaluated = null, Model model = null)
     {
         enforce((model !is null) == (opts.surrogatePool > 0), "model-guided explorers need a model, and only they");
+        rulesOf(opts).check();
         if (resume !is null)
             return continueArchive(p, grid, opts, *resume, progress, afterIteration, evaluated, model);
         Run res;
@@ -774,7 +831,7 @@ template Archiving(P, G, O = ArchiveOptions, size_t N = 0, double minScore = 0)
     }
 
     /// Where the model would start explorer k for its target: of every elite
-    /// and AIM_SAMPLES points around each (at the explorers' step size, kept
+    /// and rules.aimSamples points around each (at the explorers' step size, kept
     /// in [0, 1]), the one its fitness ranks best on the model: within the
     /// limits, nearest the target, inside it by value. Ties go to the first,
     /// elites in index order, each before its samples.
@@ -789,7 +846,7 @@ template Archiving(P, G, O = ArchiveOptions, size_t N = 0, double minScore = 0)
         {
             const g = res.archive.elites[c].genes;
             points ~= g.dup;
-            foreach (i; 0 .. AIM_SAMPLES)
+            foreach (i; 0 .. rulesOf(*opts).aimSamples)
             {
                 auto x = g.dup;
                 foreach (ref v; x)
@@ -851,6 +908,7 @@ template Archiving(P, G, O = ArchiveOptions, size_t N = 0, double minScore = 0)
         immutable size_t budget = res.seedEvals + opts.evals;
         immutable size_t lambda = res.lambda;
         immutable Ranking ranking = rankingOf(opts);
+        immutable ArchiveRules rules = rulesOf(opts);
         immutable size_t nd = p.descriptorCount;
         auto em = res.emitters;
         auto blockedUntil = res.blockedUntil;
@@ -1020,14 +1078,15 @@ template Archiving(P, G, O = ArchiveOptions, size_t N = 0, double minScore = 0)
                 {
                     // Explorer: on to the next target when this one is filled
                     // or given up on.
-                    if (g.distance < e.closest - EXPLORE_PROGRESS)
+                    if (g.distance < e.closest - rules.minProgress)
                     {
                         e.closest = g.distance;
                         e.stale = 0;
                     }
                     else
                         ++e.stale;
-                    g.restartReason = explorerRestart(e, res.archive.elites[e.target].occupied, g.sigma, lambda);
+                    g.restartReason = explorerRestart(e, res.archive.elites[e.target].occupied, g.sigma, lambda,
+                                                      rules);
                     if (g.restartReason != RestartReason.none)
                     {
                         if (g.restartReason == RestartReason.reached)
@@ -1035,7 +1094,7 @@ template Archiving(P, G, O = ArchiveOptions, size_t N = 0, double minScore = 0)
                         else
                         {
                             res.abandoned ~= e.target;
-                            blockedUntil[e.target] = res.iterations + EXPLORE_BLOCK;
+                            blockedUntil[e.target] = res.iterations + rules.blockIterations;
                         }
                         aim(k);
                     }
@@ -1045,7 +1104,7 @@ template Archiving(P, G, O = ArchiveOptions, size_t N = 0, double minScore = 0)
                     // An improver (or an explorer without a target, until one
                     // frees up).
                     e.idle = g.improved ? 0 : e.idle + 1;
-                    g.restartReason = improverRestart(e, g.sigma, lambda);
+                    g.restartReason = improverRestart(e, g.sigma, lambda, rules);
                     if (g.restartReason != RestartReason.none)
                     {
                         final switch (g.restartReason)
@@ -1288,6 +1347,158 @@ unittest
     immutable double d = grid.distance([0.3, 0.3], explorer.target);
     assert(d > 0 && predictedFitness(grid, 10, Breach(0), [0.3, 0.3], [0.5], explorer, th, 0, r) == d);
     assert(predictedFitness(grid, 10, Breach(0.5), [0.3, 0.3], [0.5], improver, th, 0, r) == r.hardOffset + 0.5);
+}
+
+unittest
+{
+    // The rules as given: the two restart windows apart, the step size,
+    // the explorers' patience; and their ranges.
+    import std.exception : assertThrown;
+    immutable size_t lambda = 10;
+    ArchiveRules r;
+    r.infeasibleGenerations = 2;
+    r.infeasibleShare = 0.5;
+    assert(nearlyAllInfeasible([0, 5, 5], lambda, r) && !nearlyAllInfeasible([0, 5, 4], lambda, r));
+    assert(!nearlyAllInfeasible([0, 5, 5], lambda));
+    Emitter m;
+    m.idle = 2;
+    ArchiveRules idle2;
+    idle2.idleGenerations = 2;
+    assert(improverRestart(m, 0.1, lambda) == RestartReason.none);
+    assert(improverRestart(m, 0.1, lambda, idle2) == RestartReason.idle);
+    m.idle = 0;
+    m.infeasible = [10, 10];
+    assert(improverRestart(m, 0.1, lambda, idle2) == RestartReason.none);   // the idle window isn't the infeasible one
+    ArchiveRules wide;
+    wide.minSigma = 0.2;
+    Emitter fresh;
+    assert(improverRestart(fresh, 0.1, lambda, wide) == RestartReason.converged);
+    Emitter e;
+    e.stale = 3;
+    ArchiveRules impatient;
+    impatient.staleGenerations = 3;
+    assert(explorerRestart(e, false, 0.1, lambda) == RestartReason.none);
+    assert(explorerRestart(e, false, 0.1, lambda, impatient) == RestartReason.stuck);
+
+    ArchiveRules.init.check();
+    foreach (bad; [ArchiveRules(0), ArchiveRules(5, 0), ArchiveRules(5, 5, 0), ArchiveRules(5, 5, 1.5),
+                   ArchiveRules(5, 5, 0.9, -1), ArchiveRules(5, 5, 0.9, 1e-4, 0),
+                   ArchiveRules(5, 5, 0.9, 1e-4, 10, double.nan)])
+        assertThrown(bad.check());
+}
+
+unittest
+{
+    // In a run: an options type without ranking or rules runs as
+    // ArchiveOptions' defaults, bit for bit; rules and a ranking given change
+    // the run as they say; a resumed run keeps its own, and rules out of
+    // range are refused.
+    import std.exception : assertThrown;
+    static struct Bare
+    {
+        size_t evals = 8000, emitters = 5, lambda = 0;
+        double sigma = 0.05, alpha = 0.1;
+        ulong seed = 1;
+        size_t explorers = 2;
+        double explorerSigma = 0.1;
+        size_t surrogatePool = 0;
+        double surrogateShare = 0.5;
+        size_t surrogateFrom = 5, surrogateEpochs = 10;
+        bool surrogateImprovers = false, surrogateAim = false;
+    }
+    alias A = Archiving!(Plane, BinnedGrid);
+    alias B = Archiving!(Plane, BinnedGrid, Bare);
+    const grid = planeGrid();
+    const seeds = [[0.5, 0.5]];
+    auto o = planeOptions();
+    Bare bare = {evals: o.evals, emitters: o.emitters, lambda: o.lambda, seed: o.seed, explorers: o.explorers};
+    Plane p;
+    auto ra = A.runArchive(p, grid, seeds, o);
+    auto rb = B.runArchive(p, grid, seeds, bare);
+    assert(ra.evals == rb.evals && ra.archive.threshold == rb.archive.threshold && ra.reached == rb.reached
+           && ra.abandoned == rb.abandoned && ra.restartsIdle == rb.restartsIdle
+           && ra.restartsInfeasible == rb.restartsInfeasible && ra.restartsConverged == rb.restartsConverged);
+    foreach (c, ref el; ra.archive.elites)
+        assert(el.occupied == rb.archive.elites[c].occupied && el.genes == rb.archive.elites[c].genes
+               && el.value is rb.archive.elites[c].value);
+
+    // Each rule as given, its event forced so it happens on every platform.
+    // Improvers under CMA-ME (alpha 1: a threshold is the elite's value, so
+    // beating it is rare) go idle: each idle restart comes after exactly
+    // idleGenerations generations without an improvement.
+    foreach (n; [1, 5])
+    {
+        auto oi = o;
+        oi.evals = 2000;
+        oi.alpha = 1;
+        oi.rules.idleGenerations = n;
+        auto streak = new size_t[oi.emitters];
+        size_t[] atRestart;
+        A.runArchive(p, grid, seeds, oi, (const ref A.Generation g) {
+            if (g.explorer)
+                return;
+            streak[g.emitter] = g.improved ? 0 : streak[g.emitter] + 1;
+            if (g.restartReason == RestartReason.idle)
+                atRestart ~= streak[g.emitter];
+            if (g.restartReason != RestartReason.none)
+                streak[g.emitter] = 0;
+        });
+        assert(atRestart.length > 0);
+        foreach (v; atRestart)
+            assert(v == n);
+    }
+    // Explorers that can never get closer by minProgress give each target
+    // up after staleGenerations generations without progress (the first
+    // generation on a target is progress whenever it has a candidate within
+    // the limits).
+    foreach (n; [2, 6])
+    {
+        auto oe = o;
+        oe.evals = 2000;
+        oe.rules.minProgress = 1e9;
+        oe.rules.staleGenerations = n;
+        oe.rules.blockIterations = 1;
+        auto on = new size_t[oe.emitters], last = new size_t[oe.emitters];
+        last[] = size_t.max;
+        size_t[] atStuck;
+        auto r = A.runArchive(p, grid, seeds, oe, (const ref A.Generation g) {
+            if (!g.explorer || g.target == size_t.max)
+                return;
+            on[g.emitter] = g.target == last[g.emitter] ? on[g.emitter] + 1 : 1;
+            last[g.emitter] = g.target;
+            if (g.restartReason == RestartReason.stuck)
+                atStuck ~= on[g.emitter];
+            if (g.restartReason != RestartReason.none)
+                last[g.emitter] = size_t.max;
+        });
+        assert(atStuck.length > 0 && r.abandoned.length == atStuck.length);
+        foreach (v; atStuck)
+            assert(v == n || v == n + 1);
+    }
+
+    // A ranking that puts breaches first fills the run with candidates over
+    // the limit.
+    auto wrong = o;
+    wrong.ranking = Ranking(-1000, -1000);
+    auto rw = A.runArchive(p, grid, seeds, wrong);
+    assert(rw.causes.total > 2 * ra.causes.total);
+
+    // A run resumed with other rules or another ranking refuses; with its
+    // own it goes on.
+    auto stopped = A.runArchive(p, grid, seeds, o, null, null, (const ref A.Run r) => r.iterations == 3);
+    auto quick = o;
+    quick.rules.idleGenerations = 1;
+    auto copy = stopped;
+    assertThrown(A.runArchive(p, grid, null, quick, null, &copy));
+    copy = stopped;
+    A.runArchive(p, grid, null, o, null, &copy);
+    assert(sameRun(copy, ra));
+    copy = stopped;
+    assertThrown(A.runArchive(p, grid, null, wrong, null, &copy));
+
+    auto bad = o;
+    bad.rules.infeasibleShare = 0;
+    assertThrown(A.runArchive(p, grid, seeds, bad));
 }
 
 unittest

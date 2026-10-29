@@ -8,11 +8,11 @@ with two tools:
 - **A CMA-ES stage** (`solver.stage`) finds the best candidate from a
   start point. It stops early when progress stalls, and a learned model
   can pre-screen its candidates.
-- **An archive** (`solver.archive`) runs CMA-MAE. It keeps the best
-  candidate in every cell of a grid over your problem's descriptors. It
-  has explorers that head for empty cells, and optional model-guided and
-  pre-screened emitters. A run can stop between iterations and resume bit
-  for bit.
+- **An archive** (`solver.archive`) runs CMA-MAE, aimed at reaching cells
+  no candidate has found yet. It keeps the best candidate in every cell of
+  a grid over your problem's descriptors, and its explorers head straight
+  for empty cells. It has optional model-guided and pre-screened
+  emitters. A run can stop between iterations and resume bit for bit.
 
 Both tools are deterministic. The same problem, seed and options give the
 same bits on any thread count of one platform, provided the problem keeps
@@ -41,6 +41,7 @@ Contents:
 10. [Performance](#performance)
 11. [Gaps and caveats](#gaps-and-caveats)
 12. [Module reference](#module-reference)
+13. [References](#references)
 
 ---
 
@@ -206,10 +207,9 @@ pleaser's defaults pass these tests: its values run from 0 to about 28, so
 its stages need `terminalOffset` above 0 and its archive above 28 (and its
 explorers' distances, a few cells), and its terminal breaches stay small.
 
-**Where to set it**: `StageOptions.ranking` for a stage. For the archive,
-an options type of your own with a `Ranking ranking` field, since
-`ArchiveOptions` has none (see [Options](#options) and
-[gap 3](#gaps-and-caveats)).
+**Where to set it**: `StageOptions.ranking` for a stage, and
+`ArchiveOptions.ranking` for the archive (in an options type of your own,
+a `Ranking ranking` field; see [Options](#options)).
 
 ### Scoring
 
@@ -450,6 +450,31 @@ end = cmaStage(p, best, x0, so, model, null, &run);    // generations 21 on
 
 ## The archive
 
+The archive is CMA-MAE [1]: CMA-ES [4, 5] emitters fill a MAP-Elites
+archive [6], the best candidate found in each cell of a grid over the
+descriptors, with candidates ranked by how far they beat their cell's
+threshold. CMA-MAE builds on CMA-ME [2], which it becomes at `alpha` 1.
+
+**What solver adds: going after cells not discovered yet.** CMA-MAE
+explores indirectly. A new cell scores high once a candidate lands in it
+(its improvement counts from `minScore`), and as thresholds rise in
+well-visited cells the emitters drift to less-visited ones: once the
+thresholds have caught up, or on a flat objective, CMA-MAE is a descent
+on the archive's density histogram [1, Theorem 5.4]. Both depend on
+candidates landing near the edge of what has been found; nothing points
+an emitter at a cell that no candidate has reached. solver's explorers
+do: each takes the empty cell nearest the occupied ones as its target and
+ranks its candidates by their distance to it (`grid.distance`), until it
+reaches the cell or gives it up. Where the improvers refine what the
+archive holds, the explorers widen it. pleaser wants every character of a
+mix it can reach, so reaching new cells is the point of its runs; a
+problem that only wants the best value in each cell already found can
+set `explorers` to 0.
+
+The explorers, the constraint tiers and the infeasible restarts are
+solver's additions, from pleaser (see
+[Where the rules come from](#where-the-rules-come-from)).
+
 ### Grids
 
 A grid maps descriptor values to cells. `isGrid!G` requires these members:
@@ -525,11 +550,11 @@ A run goes like this:
    order.
 4. Improvers rank candidates by CMA-MAE improvement: value minus the cell's
    threshold. An improver restarts from a random elite when it has been
-   idle for `RESTART_GENERATIONS` generations, when nearly all its
-   candidates are infeasible, or when its step size collapses.
+   idle, when nearly all its candidates are infeasible, or when its step
+   size collapses (see [Restart and explorer rules](#restart-and-explorer-rules)).
 5. An explorer heads for the empty cell nearest the occupied ones, down
-   `grid.distance`. It retargets when it reaches the cell or gets stuck.
-   A cell it gives up on is blocked for `EXPLORE_BLOCK` iterations.
+   `grid.distance`. It retargets when it reaches the cell or gets stuck,
+   and a cell it gives up on is blocked for a while.
 6. The run stops once `opts.evals` evaluations beyond the seeds are spent
    (in whole iterations), or when `afterIteration` returns true.
 
@@ -552,7 +577,7 @@ A run goes like this:
 | `emitters` [5] | Emitters, explorers included |
 | `lambda` [0] | Population per emitter. 0 uses CMA-ES's default for the dimension (4 + ⌊3 ln n⌋). |
 | `sigma` [0.05] | Improvers' initial step size |
-| `alpha` [0.1] | Archive learning rate. 0 optimises value alone; 1 is CMA-ME. |
+| `alpha` [0.1] | Archive learning rate. 0 optimises value alone; 1 is CMA-ME. See [The archive learning rate](#the-archive-learning-rate-alpha). |
 | `seed` [1] | Run seed |
 | `explorers` [2] | How many of the emitters are explorers (the last ones) |
 | `explorerSigma` [0.1] | Explorers' step size |
@@ -560,18 +585,188 @@ A run goes like this:
 | `surrogateShare` [0.5], `surrogateFrom` [5], `surrogateEpochs` [10] | As in the stage. `surrogateFrom` counts iterations. |
 | `surrogateImprovers` [false] | Pre-screen the improvers too |
 | `surrogateAim` [false] | Start a retargeted explorer where the model predicts nearest its target |
+| `ranking` [`Ranking.init`] | How candidates rank. Change it when your values or distances reach its offsets: see [Setting the offsets](#setting-the-offsets). |
+| `rules` [`ArchiveRules.init`] | When emitters restart and explorers give a target up: see [Restart and explorer rules](#restart-and-explorer-rules). |
 
-You may pass your own options type `O` instead. It needs every field above,
-with the same names and types, and may have more. An `O` with a
-`Ranking ranking` field sets the archive's ranking; without one, the
-archive uses `Ranking.init`. `ArchiveOptions` has no `ranking` field, so a
-different ranking needs your own `O`. `O` must support `==`, because a
-resumed run checks that its options equal the saved ones (all but `evals`).
+You may pass your own options type `O` instead. It needs every field above
+but `ranking` and `rules`, with the same names and types, and may have
+more. Without `ranking` or `rules`, the archive uses their defaults. `O`
+must support `==`, because a resumed run checks that its options equal the
+saved ones (all but `evals`): a run keeps its ranking and rules when
+resumed.
 
-The restart and explorer rules are compile-time constants in
-`solver.archive`, not options: `RESTART_GENERATIONS` (5),
-`RESTART_INFEASIBLE` (0.9), `RESTART_SIGMA` (1e-4), `EXPLORE_STALE` (10),
-`EXPLORE_PROGRESS` (0.01), `EXPLORE_BLOCK` (30) and `AIM_SAMPLES` (200).
+### The archive learning rate (`alpha`)
+
+Each candidate that beats its cell's threshold moves the threshold
+towards its value by `alpha` of the gap. After about 1 / `alpha` such
+candidates a cell's threshold has nearly caught up with what the cell
+holds, and the cell stops drawing improvers away from the rest of the
+archive. At 0 the thresholds stay at `minScore` and the emitters optimise
+value alone; at 1 a threshold is its cell's best value, CMA-ME [2].
+
+- **The paper's values** [1]: 0.01 in its main experiments (a 100 × 100
+  archive), 0.1 and 0.02 in its image-generation ones. It reports CMA-MAE
+  robust to the exact value.
+- **Another resolution** [1, appendix G]: for archives of *M*<sub>1</sub>
+  and *M*<sub>2</sub> cells, α<sub>2</sub> = 1 − (1 − α<sub>1</sub>)<sup>*M*<sub>2</sub>/*M*<sub>1</sub></sup>
+  keeps the annealing of each cell the same for the same number of
+  candidates offered. A coarser archive needs a smaller `alpha`, since each
+  of its cells gets more of them. The derivation assumes they spread
+  evenly over the cells and a constant objective; the paper conjectures it
+  holds for convex ones.
+- **Your run's length** (solver's rule of thumb, not the paper's): a cell
+  can be offered at most about `evals` ÷ cells candidates in a run. Keep
+  1 / `alpha` a fraction of that, or the thresholds hardly move and the
+  run behaves as at 0. pleaser's 0.1 with 75 cells and 8000 evaluations:
+  about 100 candidates per cell, thresholds caught up after about 10. The
+  conversion above would give a far smaller `alpha` for 75 cells than the
+  paper's 0.01 for 10,000, but the paper's runs are hundreds of times
+  longer.
+
+### Restart and explorer rules
+
+An emitter runs CMA-ES from one start until a rule says it has stopped
+paying off; it then starts again elsewhere (an improver from a random
+elite, at `sigma`; an explorer at a new target, from the elite nearest
+it). `ArchiveOptions.rules`, an `ArchiveRules`, holds those rules. Each
+trades depth for breadth: a patient emitter refines where it is, an
+impatient one covers more of the archive. The defaults are pleaser's: a
+few hundred genes, λ at CMA-ES's default (17 to 22 there), 5 emitters,
+8000 evaluations, 75 cells; a run of 80 to 95 iterations.
+
+A *generation* is one emitter's λ candidates; an *iteration* is one
+generation of every emitter. A run has about evals ÷ (emitters × λ)
+iterations.
+
+| Rule | Default | An emitter restarts or retargets when | Unit |
+|---|---|---|---|
+| `idleGenerations` | 5 | an improver had no candidate above its cell's threshold for this many generations in a row | generations |
+| `infeasibleGenerations`, `infeasibleShare` | 5, 0.9 | any emitter's last `infeasibleGenerations` generations had at least this share of their candidates over a hard or terminal limit | generations, share of λ |
+| `minSigma` | 1e-4 | any emitter's CMA-ES step size fell below this | gene units |
+| `staleGenerations`, `minProgress` | 10, 0.01 | an explorer's closest candidate within the limits got no closer to its target by `minProgress` for this many generations (its first generation on a target counts as progress when it has such a candidate) | generations, grid distance |
+| `blockIterations` | 30 | (after) no explorer aims at a cell given up on for this many iterations | iterations |
+| `aimSamples` | 200 | (with `surrogateAim`) a retargeted explorer starts at the best, on the model, of each elite and this many points around it | points per elite |
+
+The rules are checked when a run starts: windows at least 1, a share
+above 0 and at most 1, `minSigma` and `minProgress` finite and not
+negative. Under their former names, `RESTART_GENERATIONS`,
+`RESTART_INFEASIBLE`, `RESTART_SIGMA`, `EXPLORE_STALE`, `EXPLORE_PROGRESS`,
+`EXPLORE_BLOCK` and `AIM_SAMPLES` are the defaults.
+
+#### Where the rules come from
+
+- **The restart itself is CMA-MAE's**: a new CMA-ES from a random elite,
+  its covariance reset [1, Algorithm 1], as in CMA-ME [2].
+- **Its triggers are pleaser's.** CMA-MAE's main experiments restart an
+  emitter only when CMA-ES converges [1]: pyribs' "basic" rule, which stops
+  when σ·√(largest eigenvalue of C) falls below 1e-11, the condition number
+  of C exceeds 1e14, or a generation's ranking is flat within 1e-12, after
+  pycma [3]. CMA-ME's improvement emitters, and pyribs' default
+  ("no_improvement"), restart as soon as one generation adds nothing to the
+  archive [2, 3]. `idleGenerations` waits 5 such generations; `minSigma`
+  stops at 1e-4, far above 1e-11, because pleaser's evaluations are
+  expensive and changes below that are inaudible; the infeasible restart
+  has no counterpart, since the papers have no constraint tiers.
+- **The explorers are pleaser's own.** Neither paper has emitters that
+  head for an empty cell, give it up or block it. CMA-MAE reaches new
+  cells through its thresholds and density descent [1]; the nearest
+  directed idea is CMA-ME's random direction emitters [2], which travel in
+  a chosen direction of descriptor space and restart when they stop
+  improving the archive. An explorer instead picks the empty cell to
+  reach (see [The archive](#the-archive)).
+- So the guidance below follows from how solver's code works and from
+  pleaser's runs, not from published results.
+
+#### The papers' configuration
+
+To run solver as close to CMA-MAE as it gets [1]:
+
+```d
+ArchiveOptions ao;
+ao.alpha = 0.01;                      // at the paper's resolution; see the conversion above
+ao.explorers = 0;                     // improvers only
+ao.rules.idleGenerations = size_t.max;   // no idle restarts: CMA-ES convergence only
+ao.rules.minSigma = 1e-11;            // pyribs' "basic" step-size limit
+ao.rules.infeasibleGenerations = size_t.max;   // a window that never fills: no infeasible restarts
+```
+
+pyribs' default rule instead is `idleGenerations = 1`. solver's
+convergence test is the step size alone, without the condition-number and
+flat-ranking tests, and a problem with limits ranks breaches as
+[Ranking](#ranking) says, where the paper folds penalties into the
+objective.
+
+#### Set from your units: `minProgress` and `minSigma`
+
+These two are measured in your problem's units, so the defaults are only
+right for problems shaped like pleaser's. Set them first.
+
+- **`minProgress`** is in `grid.distance` units: for a `BinnedGrid`, the
+  axis's `width` (1 unless you set it). Make it about 1% of the distance
+  across one bin. With `width` set to the bin size, distances are in bins
+  and 0.01 is right. With `width` left at 1 on an axis whose bins are
+  0.002 wide, 0.01 is five bins, and every explorer gives its target up
+  after `staleGenerations` generations however well it closes in; with
+  bins 1000 wide, any step counts as progress.
+- **`minSigma`** is in gene units, [0, 1] across each gene's range. Set it
+  to about a tenth of the smallest gene change that still matters. A gain
+  over 30 dB that matters to 0.03 dB changes by 0.001 of its range, so
+  1e-4 is right; a parameter that matters to 1% of its range can stop at
+  1e-3 and save the generations spent below it.
+
+#### Patience: `idleGenerations`, `infeasibleGenerations`, `staleGenerations`
+
+These windows ask how many generations without progress mean CMA-ES has
+stalled. That depends on how fast CMA-ES makes progress on your problem,
+not on the budget:
+
+| Your problem | Effect on CMA-ES | Change the windows |
+|---|---|---|
+| Many more genes than pleaser, or a small λ | fewer improvements per generation; slower to adapt its step size and shape | longer |
+| Few genes, a large λ, a smooth objective | improves within a generation or two when it can | shorter |
+| A noisy objective | improvements come and go by chance | `idleGenerations` longer, so a run of unlucky generations doesn't restart an emitter that improves on average |
+| A narrow feasible region (most candidates over a limit near the good ones) | needs several generations to get back inside | `infeasibleShare` up to 1, or `infeasibleGenerations` longer |
+| Large regions over the limits that lead nowhere | wastes whole windows in them | `infeasibleGenerations` shorter |
+| Cells far apart in descriptor space, or slow to reach | an explorer closes in slowly | `staleGenerations` longer |
+
+Keep every window well under the run's length in generations, so each
+emitter restarts or retargets many times: pleaser's 5 and 10 are 5 to 12%
+of its 80 to 95 iterations. A run of 20 iterations needs shorter windows,
+or more evaluations.
+
+#### Run length and cost: `blockIterations`, `aimSamples`
+
+- **`blockIterations`** keeps explorers off cells they failed to reach.
+  pleaser's 30 is about a third of its run: a cell given up on is tried
+  again once the archive has grown towards it. Scale it with your
+  run's iterations; shorter when the archive keeps spreading (new
+  neighbours make old targets reachable), longer when the same cells fail
+  again and again.
+- **`aimSamples`** costs occupied cells × (`aimSamples` + 1) model
+  predictions each time an explorer is aimed. More genes leave the points
+  around an elite sparser: raise it with the dimension when the model is
+  cheap, lower it when predictions are slow next to an evaluation.
+
+#### Checking them
+
+The result says whether a rule is off. Read `restartsIdle`,
+`restartsInfeasible`, `restartsConverged`, `reached` and `abandoned`, and,
+in the `progress` callback, each generation's `restartReason`, `improved`
+and `distance`:
+
+| You see | Change |
+|---|---|
+| Improvers restart idle while each restart still lifts the QD score | `idleGenerations` up |
+| Most of the improvers' generations improve nothing (`improved` 0), in a short run | `idleGenerations` down |
+| `restartsInfeasible` high, few elites near the limits | `infeasibleShare` up, or `infeasibleGenerations` up |
+| Generations with nearly all candidates infeasible go on and on | `infeasibleGenerations` down |
+| `restartsConverged` high, elites still improving | `minSigma` down |
+| Long runs of generations at a tiny `sigma` with `improved` 0 | `minSigma` up |
+| `abandoned` far above `reached`, and `distance` still falling when an explorer gave up | `staleGenerations` up, or `minProgress` down |
+| Explorers return to the same cells and give them up again | `blockIterations` up |
+
+Change one rule at a time, and compare runs over a few seeds rather than
+one: a rule moves every later restart, so one run says little.
 
 ### Callbacks
 
@@ -1178,7 +1373,8 @@ add them to `Saved` as fields.
   the stall test, exposed for custom loops.
 - **`solver.archive`'s smaller helpers**:
   - `emitterSeed`, `explorerGain`, `predictedFitness`
-  - `nearlyAllInfeasible`, `explorerRestart`, `improverRestart`
+  - `nearlyAllInfeasible`, `explorerRestart`, `improverRestart` (each
+    takes an `ArchiveRules` last, the defaults when left out)
   - `pickTarget`, `refocus`, `copyOf`
   - `NoCauses`, `CausesOf!P`
 
@@ -1279,21 +1475,15 @@ one says what it costs you and how to work around it today.
    reports `hard + terminal` there, so a predicted terminal breach ranks as
    a hard one in a pre-screened stage. The archive's model interface keeps
    the tiers.
-3. **The archive's ranking needs a custom options type.** `ArchiveOptions`
-   has no `ranking` field, so an objective whose range or distances reach
-   the default offsets needs your own `O` with one (see
-   [Setting the offsets](#setting-the-offsets)).
-4. **Restart and explorer rules are constants.** `RESTART_*`, `EXPLORE_*`
-   and `AIM_SAMPLES` can't be changed per run.
-5. **LDC only, and no dub registry package.** See
+3. **LDC only, and no dub registry package.** See
    [Adding solver to a project](#adding-solver-to-a-project).
-6. **Runs differ between platforms.** solver's own CMA-ES and explorers
+4. **Runs differ between platforms.** solver's own CMA-ES and explorers
    use the C maths library, whose last bits differ between glibc and the
    MSVC runtime, so the same run takes different paths on Linux and
    Windows. This is accepted, not planned to change: keep goldens per
    platform (see [Determinism](#determinism)). `solver.detmath` has
    platform-identical `log2` and `exp2` for a problem's own use.
-7. **Evaluation log, survey and model test tools stay in pleaser.**
+5. **Evaluation log, survey and model test tools stay in pleaser.**
    pleaser's `evals.bin` log, random survey and offline surrogate tests
    are mix-specific and stay there. Use the `evaluated` callback to build
    your own log.
@@ -1306,10 +1496,33 @@ one says what it costs you and how to work around it today.
 |---|---|
 | `solver.problem` | `Tier`, `Breach`, `ConstraintSpec`, `breachOf`, `value`, `Ranking`, `Scoring`, `clamp01`, `boundExcess`, `Scale`, `GeneSpec`, `Predicted`, `isProblem`, `hasDescriptors`, `hasSurrogate`, `isSaveable`, `valueOf`, `fitnessOf`, `isGrid`, `Axis`, `BinnedGrid`, `Outcome`, `DynamicProblem`, `fingerprintMismatch` |
 | `solver.stage` | `StageModel`, `StageOptions`, `Best`, `hasCauses`, `StageGeneration`, `StageEnd`, `StageRun`, `cmaStage`, `pickRendered`, `stalled` |
-| `solver.archive` | `Elite`, `Offer`, `Archive`, `copyOf`, `selectDiverse`, `ArchiveOptions`, `ArchiveSurrogate`, `GuideStats`, `ScreenStats`, `RestartReason`, `reasonText`, `NoCauses`, `CausesOf`, `ArchiveGeneration`, `Emitter`, `ArchiveRun`, `RunState`, `runState`, `restoreRun`, `ArchiveBatch`, `NoFeasibleSeed`, `Archiving` (`runArchive`), the restart constants and helpers |
+| `solver.archive` | `Elite`, `Offer`, `Archive`, `copyOf`, `selectDiverse`, `ArchiveOptions`, `ArchiveSurrogate`, `GuideStats`, `ScreenStats`, `RestartReason`, `reasonText`, `NoCauses`, `CausesOf`, `ArchiveGeneration`, `Emitter`, `ArchiveRun`, `RunState`, `runState`, `restoreRun`, `ArchiveBatch`, `NoFeasibleSeed`, `Archiving` (`runArchive`), `ArchiveRules` (and its defaults' former names, `RESTART_*`, `EXPLORE_*`, `AIM_SAMPLES`), the restart helpers |
 | `solver.model` | `isLearning`, `LearnedModel`, `ColumnStats`, `columnStats` |
 | `solver.cmaes` | `CmaEs` (with `State`), `jacobiEigen` |
 | `solver.ensemble` | `EnsembleOptions`, `Ensemble`, `Stats`, `targetStats` |
 | `solver.bytes` | `Bytes` |
 | `solver.rng` | `SplitMix64` |
 | `solver.detmath` | `log2d`, `exp2d`, `log2v`, `exp2v`, `select`, `V`, `VL` |
+
+---
+
+## References
+
+1. M. C. Fontaine and S. Nikolaidis, "Covariance Matrix Adaptation
+   MAP-Annealing," *GECCO 2023*. [arXiv:2205.10752](https://arxiv.org/abs/2205.10752)
+2. M. C. Fontaine, J. Togelius, S. Nikolaidis and A. K. Hoover,
+   "Covariance Matrix Adaptation for the Rapid Illumination of Behavior
+   Space," *GECCO 2020*. [arXiv:1912.02400](https://arxiv.org/abs/1912.02400)
+3. B. Tjanaka, M. C. Fontaine, D. H. Lee, Y. Zhang, N. R. Balam,
+   N. Dennler, S. S. Garlanka, N. D. Klapsis and S. Nikolaidis, "pyribs: A
+   Bare-Bones Python Library for Quality Diversity Optimization,"
+   *GECCO 2023*. [arXiv:2303.00191](https://arxiv.org/abs/2303.00191);
+   the restart rules in its
+   [`EvolutionStrategyEmitter`](https://docs.pyribs.org/en/stable/api/ribs.emitters.EvolutionStrategyEmitter.html)
+   and its CMA-ES's `check_stop`.
+4. N. Hansen and A. Ostermeier, "Completely Derandomized Self-Adaptation
+   in Evolution Strategies," *Evolutionary Computation* 9(2), 2001.
+5. N. Hansen, "The CMA Evolution Strategy: A Tutorial," 2016.
+   [arXiv:1604.00772](https://arxiv.org/abs/1604.00772)
+6. J.-B. Mouret and J. Clune, "Illuminating search spaces by mapping
+   elites," 2015. [arXiv:1504.04909](https://arxiv.org/abs/1504.04909)
