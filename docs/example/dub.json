@@ -4,5 +4,6 @@
     "targetType": "executable",
     "dependencies": {
         "solver": { "path": "../.." }
-    }
+    },
+    "stringImportPaths": [".."]
 }

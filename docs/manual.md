@@ -217,7 +217,7 @@ with them a problem is its own learning spec for the learned model (see
 [A learned model](#a-learned-model)). And it documents `fingerprint` and
 `saveEval`/`loadEval` (`isSaveable!P`), a convention for a project's own
 save format: no search reads them, and saving is up to you (see
-[gap 1](#gaps-and-caveats)).
+[To a file](#to-a-file)).
 
 ### Genes: `GeneSpec`
 
@@ -648,12 +648,17 @@ fails:
 
 ### To a file
 
-solver gives you the state as plain data. **The file format is yours**:
-solver has no serialiser for it (see [gap 1](#gaps-and-caveats)). Save
-these four things:
+solver gives you the state as plain data and leaves **the file format to
+you**. It has no serialiser, by design (see [gap 1](#gaps-and-caveats)):
+a file format is a project's own choice. This section is a template to
+copy into your project and adapt instead, the code the worked example
+runs.
+
+#### What to save
 
 | What | From | Back with |
 |---|---|---|
+| A fingerprint of what the run was computed from | your problem | check with `fingerprintMismatch` |
 | The run's state between iterations | `runState(run)` → `RunState!O` | `restoreRun(run, state)` |
 | The archive: elites, **thresholds and alpha** | `run.archive` | assign `run.archive` |
 | The cause counts | `run.causes` | assign `run.causes` |
@@ -668,7 +673,7 @@ and holds the training data and the ensemble. `restore` refuses bytes
 from another run size or shape, and leaves the model as it was when it
 does.
 
-Also save a **fingerprint**: name/value pairs describing what the run was
+The **fingerprint** is name/value pairs describing what the run was
 computed from, such as problem inputs, settings and versions. Check it on
 load with `solver.problem.fingerprintMismatch(saved, now)`. It returns
 null when every saved pair is in `now` with the same value, in any order,
@@ -677,53 +682,349 @@ accepted, so a project can add a setting to its fingerprint without
 refusing older files; when a new setting changes results, give it a
 default value its older files can be read as, or check it yourself.
 
-The worked example saves and loads with a 60-line generic writer
-([`docs/example/source/checkpoint.d`](example/source/checkpoint.d)). The
-writer walks structs field by field, with arrays length first, through
-`solver.bytes.Bytes`:
+#### The format
+
+A file is a header, then one value:
+
+- **Header**: your project's magic string (so another file is refused
+  outright) and a format version (`uint`).
+- **A struct**: its field count, then each field as its name, its byte
+  length and its bytes. The reader matches fields **by name**, so their
+  order doesn't matter, and the lengths let it step over a field.
+- **A static array** or **a slice**: its length, then its elements.
+- **A scalar**: its bytes, through `solver.bytes.Bytes` (native layout, so
+  little-endian on little-endian machines, and a `size_t` field is as wide
+  as the build's). Lengths are `ulong`.
+
+Writing a struct straight through `Bytes.put` is wrong for any struct
+holding arrays, because it writes their pointers. The template walks the
+fields instead, and refuses at compile time a type holding a pointer, a
+class, a delegate or an associative array.
+
+#### The template
+
+Copy this module into your project as it is; adapt `MAGIC`, `FORMAT` and
+`Saved` (below) rather than the module. It is
+[`docs/example/source/checkpoint.d`](example/source/checkpoint.d), and the
+example checks at compile time that the two are the same text.
+
+<!-- checkpoint.d -->
+```d
+/// A checkpoint file format to copy into a project and adapt (the developer
+/// manual's "Stopping, saving and resuming → To a file"). solver gives a
+/// run's state as plain data (RunState, the archive, the causes) and the
+/// model's as bytes, and leaves the file format to the caller.
+///
+/// A file is a header (the project's magic string and its format version)
+/// and one value. A struct is written as its named fields, each with its
+/// byte length, so the reader matches fields by name: a field the file
+/// lacks keeps the default the reader starts from (older files stay
+/// readable when a field is added), and a field the reader doesn't know is
+/// refused (a newer file isn't half read) unless it is listed as retired.
+/// A static array is its elements, a slice its length then its elements, a
+/// scalar its bytes; lengths are ulong. Everything goes through
+/// solver.bytes, so the bytes are little-endian on little-endian machines.
+module checkpoint;
+
+import std.exception : enforce;
+import std.traits : isPointer, isAssociativeArray, isDelegate, isFunctionPointer;
+
+import solver.bytes : Bytes;
+
+/// Appends the header: `magic`, then `version_`.
+void writeHeader(ref Bytes o, string magic, uint version_)
+{
+    write(o, magic);
+    o.put(version_);
+}
+
+/// Reads the header `writeHeader` wrote and returns its version. Throws
+/// when the magic isn't `magic` (not this project's file) or the version
+/// is above `current` (a newer program's file).
+uint readHeader(ref Bytes r, string magic, uint current)
+{
+    string m;
+    read(r, m);
+    enforce(m == magic, "not a " ~ magic ~ " file");
+    immutable uint v = r.get!uint;
+    enforce(v <= current, "the file is of a newer format than this program reads");
+    return v;
+}
+
+/// Appends `v` to `o`: a struct its fields by name, a static array element
+/// by element, a slice its length then its elements, a scalar its bytes.
+void write(T)(ref Bytes o, const ref T v)
+{
+    static assert(!isPointer!T && !isAssociativeArray!T && !isDelegate!T && !isFunctionPointer!T
+                  && !is(T == class) && !is(T == interface) && !is(T == union),
+                  T.stringof ~ " holds a reference; save what it refers to instead");
+    static if (is(T == struct))
+    {
+        o.put(ulong(v.tupleof.length));
+        static foreach (i; 0 .. v.tupleof.length)
+        {{
+            immutable string name = __traits(identifier, T.tupleof[i]);
+            write(o, name);
+            // The field's byte length, filled in once it is written.
+            immutable size_t at = o.data.length;
+            o.put(ulong(0));
+            write(o, v.tupleof[i]);
+            immutable ulong n = o.data.length - at - ulong.sizeof;
+            o.data[at .. at + ulong.sizeof] = (cast(const(ubyte)*) &n)[0 .. ulong.sizeof];
+        }}
+    }
+    else static if (is(T == E[n], E, size_t n))
+    {
+        o.put(ulong(n));
+        foreach (ref e; v)
+            write(o, e);
+    }
+    else static if (is(T == U[], U))
+    {
+        o.put(ulong(v.length));
+        foreach (ref e; v)
+            write(o, e);
+    }
+    else
+        o.put(cast() v);
+}
+
+/// Reads into `v` what `write` wrote. A struct field the file lacks keeps
+/// the value `v` has, so start from a default (`T v;`). A field in the file
+/// that `T` has no longer is skipped when `retired` names it as
+/// "Struct.field" (`Struct` the type's name without template arguments),
+/// and throws otherwise.
+void read(T)(ref Bytes r, ref T v, const(string)[] retired = null)
+{
+    static if (is(T == struct))
+    {
+        immutable ulong fields = r.get!ulong;
+        foreach (_; 0 .. fields)
+        {
+            string name;
+            read(r, name);
+            immutable ulong n = r.get!ulong;
+            enforce(n <= r.data.length - r.at, "checkpoint cut short");
+            auto field = Bytes(r.data[r.at .. r.at + cast(size_t) n]);
+            r.at += cast(size_t) n;
+            bool known;
+            static foreach (i; 0 .. v.tupleof.length)
+                if (name == __traits(identifier, T.tupleof[i]))
+                {
+                    read(field, v.tupleof[i], retired);
+                    enforce(field.done, "checkpoint field " ~ name ~ " of another type");
+                    known = true;
+                }
+            if (!known)
+            {
+                import std.algorithm : canFind;
+                enforce(retired.canFind(__traits(identifier, T) ~ "." ~ name),
+                        "checkpoint field " ~ __traits(identifier, T) ~ "." ~ name ~ " unknown to this program");
+            }
+        }
+    }
+    else static if (is(T == E[n], E, size_t n))
+    {
+        enforce(r.get!ulong == n, "checkpoint array of another length");
+        foreach (ref e; v)
+            read(r, e, retired);
+    }
+    else static if (is(T == immutable(char)[]))
+    {
+        char[] s;
+        read(r, s);
+        v = s.idup;
+    }
+    else static if (is(T == U[], U))
+    {
+        immutable ulong n = r.get!ulong;
+        enforce(n <= r.data.length - r.at, "checkpoint cut short");
+        v = new U[cast(size_t) n];
+        foreach (ref e; v)
+            read(r, e, retired);
+    }
+    else
+        v = r.get!T;
+}
+
+unittest
+{
+    import std.exception : assertThrown;
+
+    // Values come back as they went in, whatever they nest.
+    static struct S { double a; int[2] b; string s; double[][] m; bool f; }
+    const S x = {1.5, [3, 4], "beam", [[1.0], [], [2.0, 3.0]], true};
+    Bytes o;
+    writeHeader(o, "test", 1);
+    write(o, x);
+    auto r = Bytes(o.data);
+    assert(readHeader(r, "test", 1) == 1);
+    S y;
+    read(r, y);
+    assert(y == x && r.done);
+
+    // Another project's file, or a newer format's, is refused.
+    auto other = Bytes(o.data);
+    assertThrown(readHeader(other, "other", 1));
+    Bytes newer;
+    writeHeader(newer, "test", 2);
+    auto rn = Bytes(newer.data);
+    assertThrown(readHeader(rn, "test", 1));
+
+    // A field added since: the older file still reads, the new field keeps
+    // its default. Fields are matched by name, so their order may change.
+    static struct Added { bool f; string s; double a; int[2] b; double[][] m; int count = 7; }
+    Added z;
+    auto ra = Bytes(o.data);
+    readHeader(ra, "test", 1);
+    read(ra, z);
+    assert(z.a == 1.5 && z.b == [3, 4] && z.s == "beam" && z.m == x.m && z.f && z.count == 7 && ra.done);
+
+    // A field dropped since: refused unless retired.
+    static struct Dropped { double a; int[2] b; string s; bool f; }
+    Dropped d;
+    auto rd = Bytes(o.data);
+    readHeader(rd, "test", 1);
+    assertThrown(read(rd, d));
+    rd = Bytes(o.data);
+    readHeader(rd, "test", 1);
+    read(rd, d, ["Dropped.m"]);
+    assert(d.a == 1.5 && d.s == "beam" && d.f && rd.done);
+
+    // A field whose type changed is refused.
+    static struct Changed { double a; int[2] b; string s; double[][] m; double f; }
+    Changed c;
+    auto rc = Bytes(o.data);
+    readHeader(rc, "test", 1);
+    assertThrown(read(rc, c));
+}
+```
+
+The worked example uses it like this: one struct, `Saved`, holds
+everything a checkpoint holds, so every part of the file is a named field.
 
 ```d
+/// The checkpoint file's magic string and format version. Bump the
+/// version when a saved field changes meaning or type, and teach load to
+/// read the older one; adding a field needs no bump (see checkpoint.d).
+enum string MAGIC = "solver-example checkpoint";
+enum uint FORMAT = 1;
+
+/// What a checkpoint holds: the problem's fingerprint, the run's state, its
+/// archive and causes, and the model.
+struct Saved
+{
+    string[2][] fingerprint;
+    RunState!ArchiveOptions state;
+    typeof(A.Run.archive) archive;
+    A.Run.Causes causes;
+    ubyte[] model;
+}
+
+/// Saves a run stopped between iterations.
 void save(string path, const ref Beam p, const ref A.Run run, Model model)
 {
+    const Saved s = {fingerprint: p.fingerprint, state: runState(run), archive: run.archive, causes: run.causes,
+                     model: model.save(run.evals)};
     Bytes o;
-    const fp = p.fingerprint;
-    checkpoint.write(o, fp);
-    const st = runState(run);
-    checkpoint.write(o, st);
-    checkpoint.write(o, run.archive);
-    checkpoint.write(o, run.causes);
-    const m = model.save(run.evals);
-    checkpoint.write(o, m);
+    checkpoint.writeHeader(o, MAGIC, FORMAT);
+    checkpoint.write(o, s);
     write(path, o.data);
 }
 
+/// Loads what save wrote into a new run, ready to pass as runArchive's
+/// `resume`, and restores the model.
 A.Run load(string path, const ref Beam p, Model model)
 {
     auto r = Bytes(cast(ubyte[]) read(path));
-    string[2][] fp;
-    checkpoint.read(r, fp);
-    if (const why = fingerprintMismatch(fp, p.fingerprint))
-        throw new Exception("the checkpoint is of another problem: " ~ why);
-    RunState!ArchiveOptions st;
-    checkpoint.read(r, st);
-    A.Run run;
-    checkpoint.read(r, run.archive);
-    checkpoint.read(r, run.causes);
-    ubyte[] m;
-    checkpoint.read(r, m);
+    checkpoint.readHeader(r, MAGIC, FORMAT);
+    Saved s;
+    checkpoint.read(r, s);
     if (!r.done)
         throw new Exception("the checkpoint has bytes left over");
-    restoreRun(run, st);
-    model.restore(m, run.evals);
+    if (const why = fingerprintMismatch(s.fingerprint, p.fingerprint))
+        throw new Exception("the checkpoint is of another problem: " ~ why);
+    A.Run run;
+    restoreRun(run, s.state);
+    run.archive = s.archive;
+    run.causes = s.causes;
+    model.restore(s.model, run.evals);
     return run;
 }
 ```
 
-The example then checks that the resumed run's archive is the uninterrupted
-run's, bit for bit. That writer's format changes whenever a field is added
-to any of these types, so a project that keeps files across solver
-versions should write a versioned format of its own. pleaser's
-`elites.state` is a text format of this kind.
+The example then checks that the resumed run's archive is the
+uninterrupted run's, bit for bit.
+
+#### Adapting it
+
+- **Name the file**: give `MAGIC` your project's name, and put what a
+  checkpoint holds in `Saved`, one field per thing to save. Anything your
+  problem keeps between iterations (its own counters, a schedule) goes in
+  `Saved` too, as plain data.
+- **Adding a field** (to `Saved`, or when a solver upgrade adds one to
+  `RunState`, `Archive` or `ArchiveOptions`) needs no new version. An
+  older file lacks it, and the field keeps the default it has in the
+  `Saved s;` the reader starts from. Give a field you add a default
+  initialiser that means "as before" (pleaser does the same in its text
+  formats, below). When no default can mean that, bump `FORMAT`.
+- **Removing a field**: an older file still has it, and `read` refuses
+  any field it doesn't know, so that a newer program's file is never half
+  read. Name the removed field in `read`'s `retired` list, as
+  `"Struct.field"` (the struct's name without template arguments):
+  `checkpoint.read(r, s, ["Saved.schedule"]);`.
+- **Changing a field's type or meaning, or renaming it**: bump `FORMAT`
+  and convert in `load`. Keep the old layout as a struct of its own and
+  read it when the header says so:
+
+  ```d
+  enum uint FORMAT = 2;            // for example, 2: the fingerprint became a struct
+
+  struct SavedV1 { string[2][] fingerprint; RunState!ArchiveOptions state; /* ... */ ubyte[] model; }
+
+  A.Run load(string path, const ref Beam p, Model model)
+  {
+      auto r = Bytes(cast(ubyte[]) read(path));
+      Saved s;
+      if (checkpoint.readHeader(r, MAGIC, FORMAT) == 1)
+      {
+          SavedV1 old;
+          checkpoint.read(r, old);
+          s = upgrade(old);        // your conversion
+      }
+      else
+          checkpoint.read(r, s);
+      // ... as before
+  }
+  ```
+
+  A field whose type changed without a bump is refused when its bytes
+  don't fit the new type (`"of another type"`). One of the same size
+  (`int` to `float`) isn't caught: bump the version.
+- **solver upgrades**: a field solver adds reads as its default, and
+  nothing promises that default means "as before". A resumed run is only
+  guaranteed to be the uninterrupted run, bit for bit, on the solver it
+  was saved with. If that matters, put your solver revision in the
+  fingerprint.
+- **Platforms**: a checkpoint loads on any platform, but resumes bit for
+  bit only on the one it was saved on; elsewhere it goes on as that
+  platform's run would (runs differ between platforms). Record the
+  platform in the file (a field of `Saved`, or the fingerprint's
+  information) if you need to tell; pleaser's states name theirs.
+- **Write through a temporary file and a rename**, so a stop in mid-write
+  leaves the last checkpoint whole: `write(path ~ ".tmp", o.data);
+  rename(path ~ ".tmp", path);`.
+
+pleaser's `elites.state` (`elitesText` and `parseElites` in
+`pleaser/source/pleaser/archive.d`) is a real versioned format, as text: a
+header line, then one tagged line per thing (`check`, `alpha`,
+`threshold`, `elite`, `run ...`), with numbers in hexadecimal floating
+point so they read back bit for bit. Fields added since its first version
+are written only when they differ from their default (`cost` on an elite
+line, the model-guided explorers' `run surrogate` line), so older files
+read as before and files of runs without them are unchanged. A text
+format costs more code per field and is worth it when people read or edit
+the files; the template above is the shorter route.
 
 A stage has no resume. `CmaEs` does have `save` and `restore` (see below)
 if you write your own loop.
@@ -831,16 +1132,16 @@ Your problem must keep them too:
 
 ## Gaps and caveats
 
-These are true of solver main on 2026-10-28. Each
+These are true of solver main on 2026-10-29. Each
 one says what it costs you and how to work around it today.
 
-1. **No generic checkpoint format.** solver has `RunState`,
-   `CmaEs.State`, `LearnedModel.save` and `Bytes`, but nothing that writes
-   a run to a file. Each project writes its own; the example shows one way.
-   Writing a struct straight through `Bytes.put` is wrong for any struct
-   holding arrays, because it writes their pointers. Walk the fields, as
-   `checkpoint.d` does. `isSaveable`'s `saveEval`/`loadEval` are a
-   convention for such a format; nothing in solver calls them.
+1. **No checkpoint API, by design.** solver has `RunState`,
+   `CmaEs.State`, `LearnedModel.save` and `Bytes`, and nothing that writes
+   a run to a file. The intended route is the template in
+   [To a file](#to-a-file): copy `checkpoint.d` into your project and
+   adapt it. It versions the file and stays readable when a field is
+   added. `isSaveable`'s `saveEval`/`loadEval` are a convention for a
+   project's own format; nothing in solver calls them.
 2. **The terminal tier on stage pre-screening.** `StageModel.predictScore`
    returns one violation, which the stage ranks as hard. `LearnedModel`
    reports `hard + terminal` there, so a predicted terminal breach ranks as
