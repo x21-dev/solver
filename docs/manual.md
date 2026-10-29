@@ -148,16 +148,68 @@ otherwise     →  −value
 
 The defaults are `hardOffset = 100`, `terminalOffset = 50` and
 `boundPenalty = 10`. They are pleaser's settings, for values from 0 to 28.
-**The offsets must put every breach above every value.**
-`terminalOffset` must exceed minus the lowest value you can produce, and
-`hardOffset` must exceed `terminalOffset` plus the largest terminal breach.
-If your objective can be below −50 or above +50, set your own `Ranking`
-(`StageOptions.ranking`, or a `ranking` field in your archive options type;
-see [Options](#options)).
 
-The archive ranks an emitter's candidates the same way, but uses the
-CMA-MAE improvement (value minus the cell's threshold) or the explorer's
-distance in place of the value.
+The archive ranks an emitter's candidates the same way, but in place of
+the value it uses the CMA-MAE improvement (the value minus its cell's
+threshold) or, for an explorer heading for a target, minus the distance
+to it.
+
+#### Setting the offsets
+
+**The offsets must rank every breach below every candidate within the
+limits**: a fitness of `terminalOffset + terminal` must be larger than any
+`−value` (CMA-ES minimises). Nothing checks this. With offsets too small
+for your objective, the search runs and quietly prefers candidates over
+the limits: in the archive, a candidate within the limits but 200 below its
+cell's threshold gets fitness 200, and one over a hard limit by 1 gets
+101 and ranks better.
+
+Work them out from your objective, where *value* is what the ranking
+reads: the objective less the soft tier's costs (see
+[Limits: three tiers](#limits-three-tiers)).
+
+| | A stage | The archive |
+|---|---|---|
+| The most negative quantity ranked | the lowest value, *v*<sub>min</sub> | an improvement, at least *v*<sub>min</sub> − *v*<sub>max</sub> (a cell's threshold can reach the highest value); an explorer's −distance, at least −*d*<sub>max</sub> |
+| `terminalOffset` must exceed | −*v*<sub>min</sub> | *v*<sub>max</sub> − *v*<sub>min</sub>, and *d*<sub>max</sub> |
+| `hardOffset` must exceed | `terminalOffset` + the largest terminal breach | the same |
+
+- **Leave a margin**, about twice the bound, since the extremes are hard
+  to know in advance. A larger offset costs nothing: it only has to be
+  above the values, not close to them.
+- **A problem without a terminal tier** still needs `terminalOffset`
+  above the values. It is the line every breach is ranked from.
+- **The breaches are in your own units**: `hard` and `terminal` are the
+  sums of your violations (`breachOf`). A terminal breach that can grow
+  without bound needs `hardOffset` far above `terminalOffset`, or a capped
+  violation.
+- **`boundPenalty` scales with the objective too.** It is the cost per
+  squared gene unit outside [0, 1]: pleaser's 10 makes a gene 0.1 outside
+  cost 0.1, about a useful gain on its scale. For an objective 1000 times
+  smaller, the default 10 would outweigh every difference in value, and
+  CMA-ES would chase the bounds instead. Set it so a gene 0.1 outside costs
+  about one useful step of your objective: 100 times that step.
+- **The archive's `minScore`** (a template argument of `Archiving`, 0 by
+  default) is where every cell's threshold starts: keep it at or below
+  *v*<sub>min</sub>.
+
+Example: an objective from 0 to 5000 in the archive, a terminal breach of
+at most 100, explorer distances below 10, and a useful step of about 20:
+
+```d
+Ranking r = {terminalOffset: 10_000,     // 2 × (5000 − 0), above the distances too
+             hardOffset: 20_000,         // well above 10_000 + 100
+             boundPenalty: 2_000};       // 100 × 20
+```
+
+pleaser's defaults pass these tests: its values run from 0 to about 28, so
+its stages need `terminalOffset` above 0 and its archive above 28 (and its
+explorers' distances, a few cells), and its terminal breaches stay small.
+
+**Where to set it**: `StageOptions.ranking` for a stage. For the archive,
+an options type of your own with a `Ranking ranking` field, since
+`ArchiveOptions` has none (see [Options](#options) and
+[gap 3](#gaps-and-caveats)).
 
 ### Scoring
 
@@ -1228,8 +1280,9 @@ one says what it costs you and how to work around it today.
    a hard one in a pre-screened stage. The archive's model interface keeps
    the tiers.
 3. **The archive's ranking needs a custom options type.** `ArchiveOptions`
-   has no `ranking` field, so an objective outside about −50 to +50 needs
-   your own `O` with one (see [Ranking](#ranking)).
+   has no `ranking` field, so an objective whose range or distances reach
+   the default offsets needs your own `O` with one (see
+   [Setting the offsets](#setting-the-offsets)).
 4. **Restart and explorer rules are constants.** `RESTART_*`, `EXPLORE_*`
    and `AIM_SAMPLES` can't be changed per run.
 5. **LDC only, and no dub registry package.** See
