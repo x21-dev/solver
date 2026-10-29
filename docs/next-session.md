@@ -32,7 +32,7 @@ Merged so far:
 | Housekeeping: CLAUDE.md, SessionStart hook, `DynamicProblem`'s comments, the manual's introduction | #14 | |
 | Stages that stop and resume (`StageRun`); cma1 resume in pleaser (`--resume cma1.state`) | #15 | #80 |
 | Manual: setting the ranking's offsets | #16 | |
-| `ranking` and the restart and explorer rules (`ArchiveRules`) as archive options | PRNUM | |
+| `ranking` and the restart and explorer rules (`ArchiveRules`) as archive options | #17 | |
 
 Every step that touched pleaser was verified with **byte-identical golden
 runs** (the same pleaser run before and after, byte-comparing
