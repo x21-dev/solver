@@ -45,7 +45,9 @@ import solver.stage : hasCauses, pickRendered;
 
 /// When the archive restarts an emitter and when an explorer gives its
 /// target up (`ArchiveOptions.rules`; the manual's "Restart and explorer
-/// rules" says when and how to change them). The defaults are pleaser's.
+/// rules" says when and how to change them). The defaults are pleaser's:
+/// CMA-MAE itself restarts only when CMA-ES converges, and has no
+/// explorers (the manual's "Where the rules come from").
 struct ArchiveRules
 {
     /// An improver restarts, from a random elite, after this many

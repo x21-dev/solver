@@ -41,6 +41,7 @@ Contents:
 10. [Performance](#performance)
 11. [Gaps and caveats](#gaps-and-caveats)
 12. [Module reference](#module-reference)
+13. [References](#references)
 
 ---
 
@@ -449,6 +450,14 @@ end = cmaStage(p, best, x0, so, model, null, &run);    // generations 21 on
 
 ## The archive
 
+The archive is CMA-MAE [1]: CMA-ES [4, 5] emitters fill a MAP-Elites
+archive [6], the best candidate found in each cell of a grid over the
+descriptors, with candidates ranked by how far they beat their cell's
+threshold. CMA-MAE builds on CMA-ME [2], which it becomes at `alpha` 1.
+The constraint tiers, the infeasible restarts and the explorers are
+solver's additions, from pleaser (see
+[Where the rules come from](#where-the-rules-come-from)).
+
 ### Grids
 
 A grid maps descriptor values to cells. `isGrid!G` requires these members:
@@ -551,7 +560,7 @@ A run goes like this:
 | `emitters` [5] | Emitters, explorers included |
 | `lambda` [0] | Population per emitter. 0 uses CMA-ES's default for the dimension (4 + ⌊3 ln n⌋). |
 | `sigma` [0.05] | Improvers' initial step size |
-| `alpha` [0.1] | Archive learning rate. 0 optimises value alone; 1 is CMA-ME. |
+| `alpha` [0.1] | Archive learning rate. 0 optimises value alone; 1 is CMA-ME. See [The archive learning rate](#the-archive-learning-rate-alpha). |
 | `seed` [1] | Run seed |
 | `explorers` [2] | How many of the emitters are explorers (the last ones) |
 | `explorerSigma` [0.1] | Explorers' step size |
@@ -568,6 +577,34 @@ more. Without `ranking` or `rules`, the archive uses their defaults. `O`
 must support `==`, because a resumed run checks that its options equal the
 saved ones (all but `evals`): a run keeps its ranking and rules when
 resumed.
+
+### The archive learning rate (`alpha`)
+
+Each candidate that beats its cell's threshold moves the threshold
+towards its value by `alpha` of the gap. After about 1 / `alpha` such
+candidates a cell's threshold has nearly caught up with what the cell
+holds, and the cell stops drawing improvers away from the rest of the
+archive. At 0 the thresholds stay at `minScore` and the emitters optimise
+value alone; at 1 a threshold is its cell's best value, CMA-ME [2].
+
+- **The paper's values** [1]: 0.01 in its main experiments (a 100 × 100
+  archive), 0.1 and 0.02 in its image-generation ones. It reports CMA-MAE
+  robust to the exact value.
+- **Another resolution** [1, appendix G]: for archives of *M*<sub>1</sub>
+  and *M*<sub>2</sub> cells, α<sub>2</sub> = 1 − (1 − α<sub>1</sub>)<sup>*M*<sub>2</sub>/*M*<sub>1</sub></sup>
+  keeps the annealing of each cell the same for the same number of
+  candidates offered. A coarser archive needs a smaller `alpha`, since each
+  of its cells gets more of them. The derivation assumes they spread
+  evenly over the cells and a constant objective; the paper conjectures it
+  holds for convex ones.
+- **Your run's length** (solver's rule of thumb, not the paper's): a cell
+  can be offered at most about `evals` ÷ cells candidates in a run. Keep
+  1 / `alpha` a fraction of that, or the thresholds hardly move and the
+  run behaves as at 0. pleaser's 0.1 with 75 cells and 8000 evaluations:
+  about 100 candidates per cell, thresholds caught up after about 10. The
+  conversion above would give a far smaller `alpha` for 75 cells than the
+  paper's 0.01 for 10,000, but the paper's runs are hundreds of times
+  longer.
 
 ### Restart and explorer rules
 
@@ -598,6 +635,47 @@ above 0 and at most 1, `minSigma` and `minProgress` finite and not
 negative. Under their former names, `RESTART_GENERATIONS`,
 `RESTART_INFEASIBLE`, `RESTART_SIGMA`, `EXPLORE_STALE`, `EXPLORE_PROGRESS`,
 `EXPLORE_BLOCK` and `AIM_SAMPLES` are the defaults.
+
+#### Where the rules come from
+
+- **The restart itself is CMA-MAE's**: a new CMA-ES from a random elite,
+  its covariance reset [1, Algorithm 1], as in CMA-ME [2].
+- **Its triggers are pleaser's.** CMA-MAE's main experiments restart an
+  emitter only when CMA-ES converges [1]: pyribs' "basic" rule, which stops
+  when σ·√(largest eigenvalue of C) falls below 1e-11, the condition number
+  of C exceeds 1e14, or a generation's ranking is flat within 1e-12, after
+  pycma [3]. CMA-ME's improvement emitters, and pyribs' default
+  ("no_improvement"), restart as soon as one generation adds nothing to the
+  archive [2, 3]. `idleGenerations` waits 5 such generations; `minSigma`
+  stops at 1e-4, far above 1e-11, because pleaser's evaluations are
+  expensive and changes below that are inaudible; the infeasible restart
+  has no counterpart, since the papers have no constraint tiers.
+- **The explorers are pleaser's own.** Neither paper has emitters that
+  head for an empty cell, give it up or block it. The nearest idea is
+  CMA-ME's random direction emitters [2], which travel in a chosen
+  direction of descriptor space and restart when they stop improving the
+  archive.
+- So the guidance below follows from how solver's code works and from
+  pleaser's runs, not from published results.
+
+#### The papers' configuration
+
+To run solver as close to CMA-MAE as it gets [1]:
+
+```d
+ArchiveOptions ao;
+ao.alpha = 0.01;                      // at the paper's resolution; see the conversion above
+ao.explorers = 0;                     // improvers only
+ao.rules.idleGenerations = size_t.max;   // no idle restarts: CMA-ES convergence only
+ao.rules.minSigma = 1e-11;            // pyribs' "basic" step-size limit
+ao.rules.infeasibleGenerations = size_t.max;   // a window that never fills: no infeasible restarts
+```
+
+pyribs' default rule instead is `idleGenerations = 1`. solver's
+convergence test is the step size alone, without the condition-number and
+flat-ranking tests, and a problem with limits ranks breaches as
+[Ranking](#ranking) says, where the paper folds penalties into the
+objective.
 
 #### Set from your units: `minProgress` and `minSigma`
 
@@ -1406,3 +1484,26 @@ one says what it costs you and how to work around it today.
 | `solver.bytes` | `Bytes` |
 | `solver.rng` | `SplitMix64` |
 | `solver.detmath` | `log2d`, `exp2d`, `log2v`, `exp2v`, `select`, `V`, `VL` |
+
+---
+
+## References
+
+1. M. C. Fontaine and S. Nikolaidis, "Covariance Matrix Adaptation
+   MAP-Annealing," *GECCO 2023*. [arXiv:2205.10752](https://arxiv.org/abs/2205.10752)
+2. M. C. Fontaine, J. Togelius, S. Nikolaidis and A. K. Hoover,
+   "Covariance Matrix Adaptation for the Rapid Illumination of Behavior
+   Space," *GECCO 2020*. [arXiv:1912.02400](https://arxiv.org/abs/1912.02400)
+3. B. Tjanaka, M. C. Fontaine, D. H. Lee, Y. Zhang, N. R. Balam,
+   N. Dennler, S. S. Garlanka, N. D. Klapsis and S. Nikolaidis, "pyribs: A
+   Bare-Bones Python Library for Quality Diversity Optimization,"
+   *GECCO 2023*. [arXiv:2303.00191](https://arxiv.org/abs/2303.00191);
+   the restart rules in its
+   [`EvolutionStrategyEmitter`](https://docs.pyribs.org/en/stable/api/ribs.emitters.EvolutionStrategyEmitter.html)
+   and its CMA-ES's `check_stop`.
+4. N. Hansen and A. Ostermeier, "Completely Derandomized Self-Adaptation
+   in Evolution Strategies," *Evolutionary Computation* 9(2), 2001.
+5. N. Hansen, "The CMA Evolution Strategy: A Tutorial," 2016.
+   [arXiv:1604.00772](https://arxiv.org/abs/1604.00772)
+6. J.-B. Mouret and J. Clune, "Illuminating search spaces by mapping
+   elites," 2015. [arXiv:1504.04909](https://arxiv.org/abs/1504.04909)
