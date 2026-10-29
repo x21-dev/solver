@@ -25,6 +25,10 @@ jobs:
       - name: Unittests
         run: dub test --compiler=ldc2
 
+      - name: Worked example's unittests
+        working-directory: docs/example
+        run: dub test --compiler=ldc2
+
       # The worked example checks that a resumed run's archive is the
       # uninterrupted run's bit for bit, so it is a test too.
       - name: Worked example
