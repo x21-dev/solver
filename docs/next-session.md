@@ -110,8 +110,9 @@ change.
 
 `ArchiveOptions` has no `ranking`, so an objective whose range reaches
 the default offsets needs a custom options type. The manual's "Setting
-the offsets" (under Ranking) says how to size them; Dev's view (2026-10-29):
-worth adding only once a second project needs it, pleaser doesn't. Adding the field (default: today's
+the offsets" (under Ranking) says how to size them (2026-10-29). pleaser
+doesn't need the field: it matters once a project with another scale
+uses the archive. Adding the field (default: today's
 ranking) is an API addition, but `ArchiveOptions` is part of `RunState`
 and is compared on resume, and pleaser saves the options of a run in
 `elites.state` field by field. Check that pleaser's archive is unchanged:
