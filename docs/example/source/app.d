@@ -115,6 +115,21 @@ struct Beam
 
 static assert(isProblem!Beam && hasDescriptors!Beam && hasCauses!Beam && hasSurrogate!Beam && isLearning!Beam);
 
+// The manual shows checkpoint.d whole, as the template to copy; the two
+// must not drift apart. (Line ends dropped, for a checkout with CRLF.)
+static assert(() {
+    import std.array : replace;
+    import std.string : indexOf;
+    enum string open = "<!-- checkpoint.d -->\n```d\n";
+    immutable string manual = import("manual.md").replace("\r", "");
+    immutable ptrdiff_t from = manual.indexOf(open);
+    if (from < 0)
+        return false;
+    immutable string shown = manual[from + open.length .. $];
+    immutable string file = import("example/source/checkpoint.d").replace("\r", "");
+    return shown.length > file.length && shown[0 .. file.length] == file && shown[file.length .. $].indexOf("```") == 0;
+}(), "docs/manual.md's copy of checkpoint.d differs from docs/example/source/checkpoint.d");
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The run
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,19 +147,31 @@ ArchiveOptions archiveOptions()
     return o;
 }
 
-/// Saves a run stopped between iterations: the problem's fingerprint, the
-/// run's state, its archive and causes, and the model.
+/// The checkpoint file's magic string and format version. Bump the
+/// version when a saved field changes meaning or type, and teach load to
+/// read the older one; adding a field needs no bump (see checkpoint.d).
+enum string MAGIC = "solver-example checkpoint";
+enum uint FORMAT = 1;
+
+/// What a checkpoint holds: the problem's fingerprint, the run's state, its
+/// archive and causes, and the model.
+struct Saved
+{
+    string[2][] fingerprint;
+    RunState!ArchiveOptions state;
+    typeof(A.Run.archive) archive;
+    A.Run.Causes causes;
+    ubyte[] model;
+}
+
+/// Saves a run stopped between iterations.
 void save(string path, const ref Beam p, const ref A.Run run, Model model)
 {
+    const Saved s = {fingerprint: p.fingerprint, state: runState(run), archive: run.archive, causes: run.causes,
+                     model: model.save(run.evals)};
     Bytes o;
-    const fp = p.fingerprint;
-    checkpoint.write(o, fp);
-    const st = runState(run);
-    checkpoint.write(o, st);
-    checkpoint.write(o, run.archive);
-    checkpoint.write(o, run.causes);
-    const m = model.save(run.evals);
-    checkpoint.write(o, m);
+    checkpoint.writeHeader(o, MAGIC, FORMAT);
+    checkpoint.write(o, s);
     write(path, o.data);
 }
 
@@ -153,21 +180,18 @@ void save(string path, const ref Beam p, const ref A.Run run, Model model)
 A.Run load(string path, const ref Beam p, Model model)
 {
     auto r = Bytes(cast(ubyte[]) read(path));
-    string[2][] fp;
-    checkpoint.read(r, fp);
-    if (const why = fingerprintMismatch(fp, p.fingerprint))
-        throw new Exception("the checkpoint is of another problem: " ~ why);
-    RunState!ArchiveOptions st;
-    checkpoint.read(r, st);
-    A.Run run;
-    checkpoint.read(r, run.archive);
-    checkpoint.read(r, run.causes);
-    ubyte[] m;
-    checkpoint.read(r, m);
+    checkpoint.readHeader(r, MAGIC, FORMAT);
+    Saved s;
+    checkpoint.read(r, s);
     if (!r.done)
         throw new Exception("the checkpoint has bytes left over");
-    restoreRun(run, st);
-    model.restore(m, run.evals);
+    if (const why = fingerprintMismatch(s.fingerprint, p.fingerprint))
+        throw new Exception("the checkpoint is of another problem: " ~ why);
+    A.Run run;
+    restoreRun(run, s.state);
+    run.archive = s.archive;
+    run.causes = s.causes;
+    model.restore(s.model, run.evals);
     return run;
 }
 
