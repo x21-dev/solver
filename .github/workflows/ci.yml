@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install LDC 1.42.0
+        uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-1.42.0
+
+      - name: Unittests
+        run: dub test --compiler=ldc2
+
+      - name: Worked example's unittests
+        working-directory: docs/example
+        run: dub test --compiler=ldc2
+
+      # The worked example checks that a resumed run's archive is the
+      # uninterrupted run's bit for bit, so it is a test too.
+      - name: Worked example
+        working-directory: docs/example
+        run: dub run --compiler=ldc2 --build=release
