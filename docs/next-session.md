@@ -30,7 +30,7 @@ Merged so far:
 | `solver.detmath`; runs differ between platforms, goldens per platform | #12 | |
 | Next-session prompt rewritten | #13 | |
 | Housekeeping: CLAUDE.md, SessionStart hook, `DynamicProblem`'s comments, the manual's introduction | #14 | |
-| Stages that stop and resume (`StageRun`); cma1 resume in pleaser (`--resume cma1.state`) | PRNUM | PLEASERPR |
+| Stages that stop and resume (`StageRun`); cma1 resume in pleaser (`--resume cma1.state`) | #15 | #80 |
 
 Every step that touched pleaser was verified with **byte-identical golden
 runs** (the same pleaser run before and after, byte-comparing
