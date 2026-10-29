@@ -29,7 +29,7 @@ Merged so far:
 | Save format as documentation: a versioned checkpoint template | #11 | |
 | `solver.detmath`; runs differ between platforms, goldens per platform | #12 | |
 | Next-session prompt rewritten | #13 | |
-| Housekeeping: CLAUDE.md, SessionStart hook, `DynamicProblem`'s comments, the manual's introduction | PRNUM | |
+| Housekeeping: CLAUDE.md, SessionStart hook, `DynamicProblem`'s comments, the manual's introduction | #14 | |
 
 Every step that touched pleaser was verified with **byte-identical golden
 runs** (the same pleaser run before and after, byte-comparing
