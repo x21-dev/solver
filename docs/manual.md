@@ -1006,6 +1006,11 @@ uninterrupted run's, bit for bit.
   guaranteed to be the uninterrupted run, bit for bit, on the solver it
   was saved with. If that matters, put your solver revision in the
   fingerprint.
+- **Platforms**: a checkpoint loads on any platform, but resumes bit for
+  bit only on the one it was saved on; elsewhere it goes on as that
+  platform's run would (runs differ between platforms). Record the
+  platform in the file (a field of `Saved`, or the fingerprint's
+  information) if you need to tell; pleaser's states name theirs.
 - **Write through a temporary file and a rename**, so a stop in mid-write
   leaves the last checkpoint whole: `write(path ~ ".tmp", o.data);
   rename(path ~ ".tmp", path);`.
