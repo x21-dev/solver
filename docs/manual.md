@@ -15,8 +15,8 @@ with two tools:
   for bit.
 
 Both tools are deterministic. The same problem, seed and options give the
-same bits on any thread count, provided the problem keeps the rules in
-[Determinism](#determinism).
+same bits on any thread count of one platform, provided the problem keeps
+the rules in [Determinism](#determinism). Across platforms runs differ.
 
 This manual describes solver as of step 5 of its extraction from pleaser
 (solver#6: `solver.model` and `RunState`) and the fixes that followed it
@@ -759,6 +759,9 @@ if you write your own loop.
     `mask ? a : b`.
   - Plain IEEE arithmetic, no `libm`. Its unittests hold it to reference
     bit patterns, and CI runs them on Linux and Windows.
+  - It makes the maths it is used for platform-independent, not a whole
+    run: solver itself still uses `libm` (see
+    [Determinism](#determinism), item 5).
   - pleaser and its plugins keep their own identical copy,
     `pleaser.detmath`.
 - **`solver.ensemble.Ensemble`**: the network ensemble under
@@ -812,14 +815,28 @@ Your problem must keep them too:
    accumulators and combine them in a fixed order.
 4. `features`, `targets` and `predicted` in a learning spec must be pure
    functions of their arguments.
-5. Builds for different platforms can still differ in the last bit
-   through `libm` (glibc and the MSVC runtime differ in `exp`, `log`,
-   `pow` and the like). If you need runs to match across platforms, use
-   `solver.detmath`'s `log2d`/`exp2d` (and their 4-lane forms) on the
-   paths that reach a score, in place of `log2`/`exp2` (and of `log`,
-   `exp` and `pow`, rewritten over base 2), and test on each platform.
-   With LDC 1.42.0, plain arithmetic gives the same bits with or without
-   FMA instructions (`detmath`'s reference bits are the same built with
+5. Runs are the same on any thread count and CPU of one platform, but
+   **not across platforms**. LDC turns `exp`, `log`, `pow`, `sin`, `cos`
+   and the like into calls to the C maths library, and glibc and the MSVC
+   runtime can round the last bit differently. solver itself calls it
+   (CMA-ES's normal samples and step size, the explorers' noise,
+   log-scaled genes), and so does almost any objective. A last-bit
+   difference flips a ranking sooner or later, and from there the runs
+   take different paths: pleaser's Linux and Windows runs part within a
+   few generations. So:
+   - keep golden runs and reference outputs **per platform**, and compare
+     across platforms by results over seeds, not run for run;
+   - a test that needs something to happen during a run (an explorer
+     aimed, a restart) must force it, so it happens on every platform;
+   - a saved run resumes bit for bit on the platform it was saved on. On
+     another it resumes, but goes on as that platform's run would.
+
+   `solver.detmath`'s `log2d`/`exp2d` (and their 4-lane forms) give the
+   same bits everywhere. Use them where a problem's own result must not
+   depend on the platform, say a value it stores or compares against a
+   fixed reference; they don't make a whole run platform-independent. With
+   LDC 1.42.0, plain arithmetic gives the same bits with or without FMA
+   instructions (`detmath`'s reference bits are the same built with
    `-mcpu=native` or `-mattr=+fma`); don't add flags such as
    `-fp-contract=fast` or `@fastmath` that change that.
 
@@ -875,12 +892,12 @@ one says what it costs you and how to work around it today.
 6. **`DynamicProblem` mentions a C API and Python.** Neither exists.
 7. **LDC only, and no dub registry package.** See
    [Adding solver to a project](#adding-solver-to-a-project).
-8. **Platform-identical maths covers `log2` and `exp2` only.**
-   `solver.detmath` has them (scalar and 4-lane); anything else from
-   `libm` (trigonometry, `pow` outside what `exp2d(y · log2d(x))` covers)
-   can still differ in the last bit between platforms. A problem that needs
-   more brings its own, written the same way (see
-   [Determinism](#determinism)).
+8. **Runs differ between platforms.** solver's own CMA-ES and explorers
+   use the C maths library, whose last bits differ between glibc and the
+   MSVC runtime, so the same run takes different paths on Linux and
+   Windows. This is accepted, not planned to change: keep goldens per
+   platform (see [Determinism](#determinism)). `solver.detmath` has
+   platform-identical `log2` and `exp2` for a problem's own use.
 9. **Evaluation log, survey and model test tools stay in pleaser.**
    pleaser's `evals.bin` log, random survey and offline surrogate tests
    are mix-specific and stay there. Use the `evaluated` callback to build

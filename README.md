@@ -19,6 +19,10 @@ arithmetic, the same bits on every platform, copied from pleaser's
 `pleaser.detmath`. A problem's seeded noise should come from `rng.d`'s
 `SplitMix64`.
 
+Runs are bit-identical on any thread count of one platform, not across
+platforms (the C maths library differs), so keep golden runs per
+platform; see the manual's Determinism section.
+
 solver is a source library: a dependent compiles its modules with its own,
 so calls into it inline as calls within one package do.
 
