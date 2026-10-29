@@ -30,12 +30,15 @@ Merged so far:
 | `solver.detmath`; runs differ between platforms, goldens per platform | #12 | |
 | Next-session prompt rewritten | #13 | |
 | Housekeeping: CLAUDE.md, SessionStart hook, `DynamicProblem`'s comments, the manual's introduction | #14 | |
+| Stages that stop and resume (`StageRun`); cma1 resume in pleaser (`--resume cma1.state`) | #15 | #80 |
 
 Every step that touched pleaser was verified with **byte-identical golden
 runs** (the same pleaser run before and after, byte-comparing
 `elites.state`, `progress.csv` and `best.txt`) and timings within noise.
-#10 onwards changed nothing pleaser runs (pleaser's build, `dub test` and
-`./pleaser selftest` were run against #12 to show it).
+#10 to #14 changed nothing pleaser runs (pleaser's build, `dub test` and
+`./pleaser selftest` were run against #12 to show it). Stage resume did,
+and its golden runs are byte-identical apart from `cma1.state`'s new
+`stage` lines.
 
 Layout of solver:
 
@@ -130,22 +133,16 @@ re-exports them from `pleaser/source/pleaser/archive.d`, where its archive
 code uses them. Make them options whose defaults are today's
 values; pleaser's runs must stay byte-identical.
 
-### 4. Gap 5: stage resume (larger; ask before starting)
-
-A stage runs to its end. A resumable stage (its state as plain data, like
-the archive's `RunState`) would let pleaser checkpoint its CMA-ES stages.
-Worth it only if Dev wants pleaser to use it; scope it with Dev first.
-
 ### Not proposed
 
 The manual's gaps were renumbered when the old gap 6 (`DynamicProblem`
-mentioning a C API and Python, which don't exist) was closed; the numbers
-here are the current ones. A C API or Python binding would be new work to
-scope with Dev.
+mentioning a C API and Python, which don't exist) and gap 5 (no stage
+resume) were closed; the numbers here are the current ones. A C API or
+Python binding would be new work to scope with Dev.
 
-- **Gap 6, a dub registry package**: solver's licence is proprietary, so
+- **Gap 5, a dub registry package**: solver's licence is proprietary, so
   publishing is Dev's call, not a task.
-- **Gap 8**: pleaser's evaluation log, survey and model-test tools are
+- **Gap 7**: pleaser's evaluation log, survey and model-test tools are
   mix-specific and stay in pleaser.
 
 ## How to work

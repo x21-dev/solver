@@ -288,9 +288,11 @@ const end = cmaStage(p, best, x0, so, null, (const ref StageGeneration!Beam g) {
 ```
 
 `cmaStage(ref P p, ref Best!(P.Eval) best, const(double)[] x0, const ref
-StageOptions o, M screenModel, generationDone = null)` runs CMA-ES from
-`x0` for `o.budget` evaluations, rounded up to whole generations.
-`screenModel` is `null` or a `StageModel!(P.Eval)`.
+StageOptions o, M screenModel, generationDone = null, StageRun* run = null,
+afterGeneration = null)` runs CMA-ES from `x0` for `o.budget` evaluations,
+rounded up to whole generations. `screenModel` is `null` or a
+`StageModel!(P.Eval)`. `run` and `afterGeneration` stop and resume it (see
+[Stopping and resuming a stage](#stopping-and-resuming-a-stage)).
 
 **`StageOptions`:**
 
@@ -333,8 +335,9 @@ with these fields:
   `predictedFeasible`. `picked` is null when a generation isn't
   pre-screened.
 
-**`StageEnd`** returns `generations`, `spent`, `stalled`, and `rise` (the
-best's rise over the window it stalled in).
+**`StageEnd`** returns `generations`, `spent`, `stalled`, `rise` (the
+best's rise over the window it stalled in) and `stopped` (by
+`afterGeneration`).
 
 **Pre-screening.** From generation `surrogateFrom` on, the stage trains the
 model, samples `surrogatePool × lambda` candidates and ranks them on the
@@ -354,6 +357,42 @@ interface StageModel(E)
 
 `violation` is ranked as a hard breach. `LearnedModel` implements this
 interface (see [A learned model](#a-learned-model)).
+
+### Stopping and resuming a stage
+
+Pass a `StageRun` and the stage keeps its state there after every
+generation. `afterGeneration` is asked after each one whether to stop; the
+stage then returns with `end.stopped` set. Pass the same `StageRun` back,
+with the same `Best` and model, and the stage goes on from there:
+
+```d
+StageRun run;
+auto end = cmaStage(p, best, x0, so, model, null, &run, (const ref StageRun r) => r.generation == 20);
+// ... save run, best and model.save(...), load them ...
+end = cmaStage(p, best, x0, so, model, null, &run);    // generations 21 on
+```
+
+- A stage stopped and resumed ends exactly as the stage that never
+  stopped, bit for bit (on one platform; see [Determinism](#determinism)).
+- **Adding evaluations to a finished stage**: keep its `StageRun` (it is
+  filled at the end too) and resume it with a larger `budget`. It ends as
+  the stage given that budget from the start. The budget is always the
+  whole stage's.
+- **A stage that stalled** stays stopped when resumed with the same stall
+  settings: the test is applied to its saved history at once. To go on,
+  resume with a longer `stallGenerations` (or a smaller `stallTolerance`):
+  the stage then ends as one given those settings from the start, since a
+  longer window or a smaller tolerance never stops a stage sooner.
+- **Checks**: a resumed stage throws unless its options equal the saved
+  ones (all but `budget`, `stallGenerations` and `stallTolerance`), `x0`
+  has the saved number of genes (its values are ignored), and a model is
+  given once its pre-screening has begun.
+- **`StageRun`** is plain data: the options, the generations and
+  evaluations done, the best value after each generation (`history`, for
+  the stall test), CMA-ES's `CmaEs.State` (with the larger population once
+  pre-screening has begun) and the pre-screening generator's state. The
+  caller's `Best` and model aren't in it: save them alongside (see
+  [To a file](#to-a-file)).
 
 ---
 
@@ -630,7 +669,9 @@ helper the model uses.
 
 ### Within one process
 
-Stop a run with `afterIteration`, then pass it back as `resume`. Use the
+A stage stops and resumes through a `StageRun` (see
+[Stopping and resuming a stage](#stopping-and-resuming-a-stage)). An
+archive run: stop it with `afterIteration`, then pass it back as `resume`. Use the
 same problem, grid, options (`evals` may be larger) and model:
 
 ```d
@@ -1027,8 +1068,10 @@ read as before and files of runs without them are unchanged. A text
 format costs more code per field and is worth it when people read or edit
 the files; the template above is the shorter route.
 
-A stage has no resume. `CmaEs` does have `save` and `restore` (see below)
-if you write your own loop.
+A stage saves the same way: a `StageRun` and the caller's `Best` (its
+`eval`, `genes`, `feasible` and `evals`), plus the model's bytes when it
+pre-screens. Both are plain data, so the template writes them as they are:
+add them to `Saved` as fields.
 
 ---
 
@@ -1189,17 +1232,15 @@ one says what it costs you and how to work around it today.
    your own `O` with one (see [Ranking](#ranking)).
 4. **Restart and explorer rules are constants.** `RESTART_*`, `EXPLORE_*`
    and `AIM_SAMPLES` can't be changed per run.
-5. **No stage resume.** A stage runs to its end. Use the archive, or your
-   own loop over `CmaEs`, if you need checkpoints within a stage.
-6. **LDC only, and no dub registry package.** See
+5. **LDC only, and no dub registry package.** See
    [Adding solver to a project](#adding-solver-to-a-project).
-7. **Runs differ between platforms.** solver's own CMA-ES and explorers
+6. **Runs differ between platforms.** solver's own CMA-ES and explorers
    use the C maths library, whose last bits differ between glibc and the
    MSVC runtime, so the same run takes different paths on Linux and
    Windows. This is accepted, not planned to change: keep goldens per
    platform (see [Determinism](#determinism)). `solver.detmath` has
    platform-identical `log2` and `exp2` for a problem's own use.
-8. **Evaluation log, survey and model test tools stay in pleaser.**
+7. **Evaluation log, survey and model test tools stay in pleaser.**
    pleaser's `evals.bin` log, random survey and offline surrogate tests
    are mix-specific and stay there. Use the `evaluated` callback to build
    your own log.
@@ -1211,7 +1252,7 @@ one says what it costs you and how to work around it today.
 | Module | What it holds |
 |---|---|
 | `solver.problem` | `Tier`, `Breach`, `ConstraintSpec`, `breachOf`, `value`, `Ranking`, `Scoring`, `clamp01`, `boundExcess`, `Scale`, `GeneSpec`, `Predicted`, `isProblem`, `hasDescriptors`, `hasSurrogate`, `isSaveable`, `valueOf`, `fitnessOf`, `isGrid`, `Axis`, `BinnedGrid`, `Outcome`, `DynamicProblem`, `fingerprintMismatch` |
-| `solver.stage` | `StageModel`, `StageOptions`, `Best`, `hasCauses`, `StageGeneration`, `StageEnd`, `cmaStage`, `pickRendered`, `stalled` |
+| `solver.stage` | `StageModel`, `StageOptions`, `Best`, `hasCauses`, `StageGeneration`, `StageEnd`, `StageRun`, `cmaStage`, `pickRendered`, `stalled` |
 | `solver.archive` | `Elite`, `Offer`, `Archive`, `copyOf`, `selectDiverse`, `ArchiveOptions`, `ArchiveSurrogate`, `GuideStats`, `ScreenStats`, `RestartReason`, `reasonText`, `NoCauses`, `CausesOf`, `ArchiveGeneration`, `Emitter`, `ArchiveRun`, `RunState`, `runState`, `restoreRun`, `ArchiveBatch`, `NoFeasibleSeed`, `Archiving` (`runArchive`), the restart constants and helpers |
 | `solver.model` | `isLearning`, `LearnedModel`, `ColumnStats`, `columnStats` |
 | `solver.cmaes` | `CmaEs` (with `State`), `jacobiEigen` |
