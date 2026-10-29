@@ -108,8 +108,10 @@ change.
 
 ### 1. Gap 3: a `ranking` field in `ArchiveOptions`
 
-`ArchiveOptions` has no `ranking`, so an objective outside about −50 to
-+50 needs a custom options type. Adding the field (default: today's
+`ArchiveOptions` has no `ranking`, so an objective whose range reaches
+the default offsets needs a custom options type. The manual's "Setting
+the offsets" (under Ranking) says how to size them; Dev's view (2026-10-29):
+worth adding only once a second project needs it, pleaser doesn't. Adding the field (default: today's
 ranking) is an API addition, but `ArchiveOptions` is part of `RunState`
 and is compared on resume, and pleaser saves the options of a run in
 `elites.state` field by field. Check that pleaser's archive is unchanged:
