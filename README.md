@@ -14,7 +14,14 @@ pre-screened emitters, focus, and runs that stop and resume bit for bit,
 their state between iterations as plain data in `RunState`). Also the learned
 model (`model.d`: the ensemble trained on a run's evaluations, for the
 pre-screened stages and the model-guided emitters, over a problem's
-surrogate members).
+surrogate members). And `detmath.d`: `log2` and `exp2` (scalar and 4-lane) in plain IEEE
+arithmetic, the same bits on every platform, copied from pleaser's
+`pleaser.detmath`. A problem's seeded noise should come from `rng.d`'s
+`SplitMix64`.
+
+Runs are bit-identical on any thread count of one platform, not across
+platforms (the C maths library differs), so keep golden runs per
+platform; see the manual's Determinism section.
 
 solver is a source library: a dependent compiles its modules with its own,
 so calls into it inline as calls within one package do.

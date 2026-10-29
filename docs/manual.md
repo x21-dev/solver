@@ -15,8 +15,8 @@ with two tools:
   for bit.
 
 Both tools are deterministic. The same problem, seed and options give the
-same bits on any thread count, provided the problem keeps the rules in
-[Determinism](#determinism).
+same bits on any thread count of one platform, provided the problem keeps
+the rules in [Determinism](#determinism). Across platforms runs differ.
 
 This manual describes solver as of step 5 of its extraction from pleaser
 (solver#6: `solver.model` and `RunState`) and the fixes that followed it
@@ -1043,11 +1043,28 @@ if you write your own loop.
   - Accessors: `stepSize`, `currentMean`, `populationSize`, `generation`,
     `bestFitness`, `bestPoint`.
   - `jacobiEigen` is its eigensolver.
-- **`solver.rng.SplitMix64`**: the only RNG solver uses.
+- **`solver.rng.SplitMix64`**: the only RNG solver uses, and the one your
+  problem should use for any seeded noise (see
+  [Determinism](#determinism)).
   - `next()`, `uniform01()` (53 bits), `bipolar()`.
   - Its state is the public `ulong state`.
-  - Use it for any seeded noise in your problem; see
-    [Determinism](#determinism).
+  - It is the same generator as pleaser's `pleaser.rng`, bit for bit.
+- **`solver.detmath`**: `log2` and `exp2` that give the same bits on every
+  platform, for a problem whose results must match across platforms.
+  - `log2d(x)` for finite `x > 0` (no denormals or zero: floor the input
+    first), `exp2d(y)` for `y` in [−1000, 1000], exactly 1 at `y = 0`.
+    About 1e-15 relative error.
+  - `log2v` and `exp2v` do the same on a 4-lane `__vector(double[4])`
+    (`V`); every lane equals the scalar result bit for bit, so a loop can
+    run vectors with a scalar tail. `select(mask, a, b)` is the lane-wise
+    `mask ? a : b`.
+  - Plain IEEE arithmetic, no `libm`. Its unittests hold it to reference
+    bit patterns, and CI runs them on Linux and Windows.
+  - It makes the maths it is used for platform-independent, not a whole
+    run: solver itself still uses `libm` (see
+    [Determinism](#determinism), item 5).
+  - pleaser and its plugins keep their own identical copy,
+    `pleaser.detmath`.
 - **`solver.ensemble.Ensemble`**: the network ensemble under
   `LearnedModel`, usable on its own.
   - `new Ensemble(inputs, outputs, EnsembleOptions)`
@@ -1090,20 +1107,39 @@ Your problem must keep them too:
    the order of the other candidates in it, and the number of threads. If
    you parallelise, compute each candidate independently and write it to
    its own slot.
-2. Don't use `std.random`, whose algorithms aren't guaranteed to stay the
-   same across Phobos versions. Seed `SplitMix64` from the genes or your
-   own fixed seed.
+2. Draw any seeded noise from `solver.rng.SplitMix64`, seeded from the
+   genes or your own fixed seed. Don't use `std.random`, whose algorithms
+   aren't guaranteed to stay the same across Phobos versions.
 3. Keep floating-point reductions in a fixed order. `std.algorithm.sum`
    sums pairwise and changes the bits. Don't use `@fastmath`. To vectorise
    a reduction under strict IEEE, split it into lanes with independent
    accumulators and combine them in a fixed order.
 4. `features`, `targets` and `predicted` in a learning spec must be pure
    functions of their arguments.
-5. Builds for different CPUs can still differ in the last bit through
-   `libm` (`exp`, `log`) and FMA contraction. If you need runs to match
-   across platforms, test on each one. pleaser keeps platform-identical
-   `exp2d` and `log2d` in its own `detmath.d` for this reason; solver has
-   no equivalent.
+5. Runs are the same on any thread count and CPU of one platform, but
+   **not across platforms**. LDC turns `exp`, `log`, `pow`, `sin`, `cos`
+   and the like into calls to the C maths library, and glibc and the MSVC
+   runtime can round the last bit differently. solver itself calls it
+   (CMA-ES's normal samples and step size, the explorers' noise,
+   log-scaled genes), and so does almost any objective. A last-bit
+   difference flips a ranking sooner or later, and from there the runs
+   take different paths: pleaser's Linux and Windows runs part within a
+   few generations. So:
+   - keep golden runs and reference outputs **per platform**, and compare
+     across platforms by results over seeds, not run for run;
+   - a test that needs something to happen during a run (an explorer
+     aimed, a restart) must force it, so it happens on every platform;
+   - a saved run resumes bit for bit on the platform it was saved on. On
+     another it resumes, but goes on as that platform's run would.
+
+   `solver.detmath`'s `log2d`/`exp2d` (and their 4-lane forms) give the
+   same bits everywhere. Use them where a problem's own result must not
+   depend on the platform, say a value it stores or compares against a
+   fixed reference; they don't make a whole run platform-independent. With
+   LDC 1.42.0, plain arithmetic gives the same bits with or without FMA
+   instructions (`detmath`'s reference bits are the same built with
+   `-mcpu=native` or `-mattr=+fma`); don't add flags such as
+   `-fp-contract=fast` or `@fastmath` that change that.
 
 ---
 
@@ -1157,10 +1193,12 @@ one says what it costs you and how to work around it today.
 6. **`DynamicProblem` mentions a C API and Python.** Neither exists.
 7. **LDC only, and no dub registry package.** See
    [Adding solver to a project](#adding-solver-to-a-project).
-8. **No platform-identical maths.** pleaser's `detmath` (`exp2d`,
-   `log2d`) stays in pleaser, so a problem that needs bit-identical
-   results across platforms must bring its own (see
-   [Determinism](#determinism)).
+8. **Runs differ between platforms.** solver's own CMA-ES and explorers
+   use the C maths library, whose last bits differ between glibc and the
+   MSVC runtime, so the same run takes different paths on Linux and
+   Windows. This is accepted, not planned to change: keep goldens per
+   platform (see [Determinism](#determinism)). `solver.detmath` has
+   platform-identical `log2` and `exp2` for a problem's own use.
 9. **Evaluation log, survey and model test tools stay in pleaser.**
    pleaser's `evals.bin` log, random survey and offline surrogate tests
    are mix-specific and stay there. Use the `evaluated` callback to build
@@ -1180,3 +1218,4 @@ one says what it costs you and how to work around it today.
 | `solver.ensemble` | `EnsembleOptions`, `Ensemble`, `Stats`, `targetStats` |
 | `solver.bytes` | `Bytes` |
 | `solver.rng` | `SplitMix64` |
+| `solver.detmath` | `log2d`, `exp2d`, `log2v`, `exp2v`, `select`, `V`, `VL` |
