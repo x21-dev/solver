@@ -14,12 +14,16 @@
 /// keeps the best candidate ever found in each cell (the paper's result
 /// archive).
 ///
+/// solver adds an aim CMA-MAE reaches only indirectly (through its
+/// thresholds and, once they have caught up, density descent): cells no
+/// candidate has found yet. Explorers (the last emitters) head for empty
+/// cells, down the grid's distance, and take a new target when they reach
+/// theirs or get stuck; the improvers refine what the archive holds.
+///
 /// Infeasible candidates never enter the archive; emitters rank them below
 /// every feasible candidate, by how far over the limits they are. An
 /// improver restarts from a random elite when a few generations add
-/// nothing, or are nearly all infeasible. Explorers (the last emitters)
-/// head for empty cells instead, down the grid's distance, and take a new
-/// target when they reach theirs or get stuck.
+/// nothing, or are nearly all infeasible.
 ///
 /// With a model (`ArchiveSurrogate`), explorers and optionally improvers
 /// sample a larger population and render the share the model ranks best

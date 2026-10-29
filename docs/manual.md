@@ -8,11 +8,11 @@ with two tools:
 - **A CMA-ES stage** (`solver.stage`) finds the best candidate from a
   start point. It stops early when progress stalls, and a learned model
   can pre-screen its candidates.
-- **An archive** (`solver.archive`) runs CMA-MAE. It keeps the best
-  candidate in every cell of a grid over your problem's descriptors. It
-  has explorers that head for empty cells, and optional model-guided and
-  pre-screened emitters. A run can stop between iterations and resume bit
-  for bit.
+- **An archive** (`solver.archive`) runs CMA-MAE, aimed at reaching cells
+  no candidate has found yet. It keeps the best candidate in every cell of
+  a grid over your problem's descriptors, and its explorers head straight
+  for empty cells. It has optional model-guided and pre-screened
+  emitters. A run can stop between iterations and resume bit for bit.
 
 Both tools are deterministic. The same problem, seed and options give the
 same bits on any thread count of one platform, provided the problem keeps
@@ -454,7 +454,24 @@ The archive is CMA-MAE [1]: CMA-ES [4, 5] emitters fill a MAP-Elites
 archive [6], the best candidate found in each cell of a grid over the
 descriptors, with candidates ranked by how far they beat their cell's
 threshold. CMA-MAE builds on CMA-ME [2], which it becomes at `alpha` 1.
-The constraint tiers, the infeasible restarts and the explorers are
+
+**What solver adds: going after cells not discovered yet.** CMA-MAE
+explores indirectly. A new cell scores high once a candidate lands in it
+(its improvement counts from `minScore`), and as thresholds rise in
+well-visited cells the emitters drift to less-visited ones: once the
+thresholds have caught up, or on a flat objective, CMA-MAE is a descent
+on the archive's density histogram [1, Theorem 5.4]. Both depend on
+candidates landing near the edge of what has been found; nothing points
+an emitter at a cell that no candidate has reached. solver's explorers
+do: each takes the empty cell nearest the occupied ones as its target and
+ranks its candidates by their distance to it (`grid.distance`), until it
+reaches the cell or gives it up. Where the improvers refine what the
+archive holds, the explorers widen it. pleaser wants every character of a
+mix it can reach, so reaching new cells is the point of its runs; a
+problem that only wants the best value in each cell already found can
+set `explorers` to 0.
+
+The explorers, the constraint tiers and the infeasible restarts are
 solver's additions, from pleaser (see
 [Where the rules come from](#where-the-rules-come-from)).
 
@@ -651,10 +668,12 @@ negative. Under their former names, `RESTART_GENERATIONS`,
   expensive and changes below that are inaudible; the infeasible restart
   has no counterpart, since the papers have no constraint tiers.
 - **The explorers are pleaser's own.** Neither paper has emitters that
-  head for an empty cell, give it up or block it. The nearest idea is
-  CMA-ME's random direction emitters [2], which travel in a chosen
-  direction of descriptor space and restart when they stop improving the
-  archive.
+  head for an empty cell, give it up or block it. CMA-MAE reaches new
+  cells through its thresholds and density descent [1]; the nearest
+  directed idea is CMA-ME's random direction emitters [2], which travel in
+  a chosen direction of descriptor space and restart when they stop
+  improving the archive. An explorer instead picks the empty cell to
+  reach (see [The archive](#the-archive)).
 - So the guidance below follows from how solver's code works and from
   pleaser's runs, not from published results.
 
